@@ -1,0 +1,4 @@
+members = [
+  "./cli",
+  "./deps/kuu.mbt",
+]

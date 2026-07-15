@@ -1,0 +1,8 @@
+import {
+  "kawaz/kuu-cli-mbt/lib",
+  "moonbitlang/core/env",
+  "moonbitlang/core/json",
+  "moonbitlang/x/fs",
+}
+
+options("is-main": true)
