@@ -1,0 +1,97 @@
+# impl/mbt — MoonBit PoC 実装の task runner (kuu-cli DR-0001 §3)。
+# ルートの justfile から `just impl-mbt-*` として呼び出される。
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+set script-interpreter := ["bash", "-euo", "pipefail"]
+
+set positional-arguments
+
+MBT_ROOT := justfile_directory()
+# MBT_ROOT = .../kawaz/kuu-cli/main/impl/mbt
+#   ../..     = .../kawaz/kuu-cli/main
+#   ../../..  = .../kawaz/kuu-cli
+#   ../../../.. = .../kawaz  (sibling repos live here)
+KUU_MBT_ROOT := justfile_directory() + "/../../../../kuu.mbt/main"
+KUU_SPEC_ROOT := justfile_directory() + "/../../../../kuu/main"
+
+default: lint test
+
+# ---------- setup ----------
+
+# kuu.mbt の main workspace を deps/kuu.mbt に symlink する (moon.work member 解決用)。
+# CI では git clone した SHA-pin checkout をこの path に置く想定 (DR-0001 §2 Consequences)。
+[script]
+setup:
+    ln_target="{{KUU_MBT_ROOT}}"
+    link="{{MBT_ROOT}}/deps/kuu.mbt"
+    if [[ ! -d "$ln_target" ]]; then
+      printf >&2 "impl/mbt: kuu.mbt not found at %s\n" "$ln_target"
+      printf >&2 "impl/mbt: check out kawaz/kuu.mbt as a sibling of kawaz/kuu-cli first.\n"
+      exit 2
+    fi
+    if [[ -L "$link" ]]; then
+      cur=$(readlink "$link")
+      if [[ "$cur" != "../../../../../kuu.mbt/main" ]]; then
+        printf "impl/mbt: refreshing symlink deps/kuu.mbt -> ../../../../../kuu.mbt/main (was: %s)\n" "$cur"
+        ln -sfn ../../../../../kuu.mbt/main "$link"
+      fi
+    elif [[ -e "$link" ]]; then
+      printf >&2 "impl/mbt: deps/kuu.mbt exists but is not a symlink; leaving it alone (CI checkout?)\n"
+    else
+      printf "impl/mbt: creating symlink deps/kuu.mbt -> ../../../../../kuu.mbt/main\n"
+      ln -sfn ../../../../../kuu.mbt/main "$link"
+    fi
+
+# ---------- lint / test ----------
+
+# moon fmt --check は現在の moon toolchain (0.1.20260709) と formatter の間で
+# `options("is-main":true)` vs `pkgtype(kind:"executable")` の書式が食い違うため一時 skip。
+# 別 issue で追跡 (impl/mbt/README.md の Known issues 参照)。
+lint: setup
+    cd "{{MBT_ROOT}}" && moon check --target native
+
+# cli パッケージのみ実行 (deps/kuu.mbt の 346 test は kuu.mbt 側の関心、ここでは走らせない)。
+test: setup
+    cd "{{MBT_ROOT}}" && moon test cli/src/lib --target native
+    cd "{{MBT_ROOT}}" && just e2e
+
+# CLI レベル e2e: kuu/fixtures から 1 本選び、compiled binary が JSON を返すことを確認。
+# spec fixture との厳密比較は conformance runner (kuu.mbt 側) の関心で、ここでは
+# 「compiled binary が動く / JSON が壊れずに出る / expect の代表値が乗る」の 3 点を pin する。
+[script]
+e2e:
+    cd "{{MBT_ROOT}}" && moon build --target native
+    bin="{{MBT_ROOT}}/_build/native/release/build/kawaz/kuu-cli-mbt/main/main.exe"
+    if [[ ! -x "$bin" ]]; then
+      # release ビルドが .exe ではなく別名で置かれる場合の fallback
+      bin=$(find "{{MBT_ROOT}}/_build/native" -type f -name 'main*' -perm -u+x 2>/dev/null | head -1)
+    fi
+    if [[ -z "$bin" || ! -x "$bin" ]]; then
+      printf >&2 "e2e: main binary not found under _build/native\n"
+      exit 2
+    fi
+    fixture="{{KUU_SPEC_ROOT}}/fixtures/multiple-parse/separator-typed.json"
+    if [[ ! -f "$fixture" ]]; then
+      printf >&2 "e2e: fixture not found at %s (kawaz/kuu checkout missing?)\n" "$fixture"
+      exit 2
+    fi
+    # fixture case option-separator-number-success: expect success + result.ports=[5,7]
+    def_only=$(mktemp)
+    trap 'rm -f "$def_only"' EXIT
+    # extract just the definition object using jq (fixtures are self-describing multi-case docs)
+    jq '.definition' "$fixture" > "$def_only"
+    out=$("$bin" parse "$def_only" -- --ports 5,7)
+    outcome=$(echo "$out" | jq -r '.outcome')
+    ports=$(echo "$out" | jq -c '.result.ports')
+    if [[ "$outcome" != "success" ]]; then
+      printf >&2 "e2e FAIL: expected outcome=success, got %s\n" "$outcome"
+      echo >&2 "$out"
+      exit 1
+    fi
+    if [[ "$ports" != "[5,7]" ]]; then
+      printf >&2 "e2e FAIL: expected result.ports=[5,7], got %s\n" "$ports"
+      echo >&2 "$out"
+      exit 1
+    fi
+    printf "e2e OK: %s option-separator-number-success -> success, ports=[5,7]\n" "$(basename "$fixture")"

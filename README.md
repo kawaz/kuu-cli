@@ -20,7 +20,7 @@ This repository hosts implementations in multiple languages under `impl/`, all c
 
 | impl | status | notes |
 |---|---|---|
-| `impl/mbt` (MoonBit) | PoC | reuses [kawaz/kuu.mbt](https://github.com/kawaz/kuu.mbt), the spec's reference implementation |
+| [`impl/mbt`](./impl/mbt/) (MoonBit) | PoC (parse / complete / validate wired to spec fixtures) | reuses [kawaz/kuu.mbt](https://github.com/kawaz/kuu.mbt), the spec's reference implementation |
 
 ## Status
 

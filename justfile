@@ -20,12 +20,20 @@ list:
 # ---------- lint / test (impl 毎に追加) ----------
 
 # lint all implementations
-lint:
-    @echo "no implementations yet"
+lint: impl-mbt-lint
 
 # test all implementations
-test:
-    @echo "no implementations yet"
+test: impl-mbt-test
+
+# impl/mbt (MoonBit PoC — DR-0001 §3): 各 impl は自リポ内 justfile を持つ
+impl-mbt-setup:
+    cd impl/mbt && just setup
+
+impl-mbt-lint:
+    cd impl/mbt && just lint
+
+impl-mbt-test:
+    cd impl/mbt && just test
 
 # ---------- push flow (bump-semver canonical 模倣) ----------
 
