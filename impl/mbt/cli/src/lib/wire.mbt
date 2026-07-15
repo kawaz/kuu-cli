@@ -6,20 +6,14 @@
 //
 // 【PoC 仮置き — 統括が正本化する材料】
 //
-// 1. `result` 射影の export_key 適用は空 map で行う。理由: kuu.mbt の `dec_definition` /
-//    `build_export_map` は `pub` でなく (wire_decode.mbt 内部 fn)、front_door.mbt が返す
-//    `AtomicAST` からは生の `Definition` を復元できないため。結果、`export_key: null` (result
-//    から drop) や `export_key: "..."` (rename) を含む definition では result キーが name
-//    ベース (entity 名そのまま) になる。effects / errors / warnings は影響なし。修正には
-//    kuu.mbt 側で `parse_definition` が Definition (または ekmap) を副戻り値で返す拡張が要る
-//    (front_door.mbt 編集は本タスク scope 外)。
-//
-// 2. `interpretations` (ambiguous) は個数のみを返す (`{"outcome":"ambiguous","interpretations":N}`
+// 1. `interpretations` (ambiguous) は個数のみを返す (`{"outcome":"ambiguous","interpretations":N}`
 //    ではなく `{"outcome":"ambiguous","interpretations":[空 object×N]}` で数だけ pin する)。
 //    各 interpretation の詳細 (binds / claimants) をどの粒度で JSON 化するかは spec 側で
 //    未確定 (DR-053 §3 / DR-073) — CONFORMANCE.md の compact 表現との対応を後日決める。
+//    ekmap は `export_map(ast)` で入手済みなので、interpretation binds を射影する形が固まれば
+//    そのまま渡せる (現状は個数だけなので未使用)。
 //
-// 3. exit code は `--help` 系 (未実装) を除き 3 値: 0=成功、1=parse failure / validate 失敗、
+// 2. exit code は `--help` 系 (未実装) を除き 3 値: 0=成功、1=parse failure / validate 失敗、
 //    2=CLI 使い方エラー (unknown subcommand, malformed args JSON 等)。PoC の暫定割当、後日
 //    正本化。
 
@@ -142,10 +136,11 @@ pub fn cmd_validate(def_text : String) -> CmdResult {
 ///|
 /// Convert an `Outcome` into a (json_object, exit_code) pair.
 fn outcome_to_json(ast : @core.AtomicAST, o : @core.Outcome) -> (Json, Int) {
+  let ekmap = @core.export_map(ast)
   match o {
     @core.Success(binds) => {
       let effects = effects_to_json(ast.root, binds)
-      let result = result_to_json(ast.root, binds)
+      let result = result_to_json(ast.root, ekmap, binds)
       let ws = @core.warnings_of(o)
       let fields : Array[(String, Json)] = [
         ("outcome", Json::string("success")),
@@ -231,11 +226,16 @@ fn effects_to_json(sc : @core.Scope, binds : Array[@core.Binding]) -> Json {
 }
 
 ///|
-/// `result`: uses an empty ExportKey map (PoC 仮置き #1 — see file-level comment). The result
-/// object mirrors what fixture `expect.result` asserts: kv view keyed by entity name (or
-/// export_key when the caller has one; PoC does not consult ekmap so overrides do not apply).
-fn result_to_json(sc : @core.Scope, binds : Array[@core.Binding]) -> Json {
-  let ekmap : Map[String, @core.ExportKey] = Map([])
+/// `result`: kv projection with the DR-052 result-key axis applied. `ekmap` は front_door の
+/// `export_map(ast)` から取得した写像 (issue 2026-07-15 front-door-export-key-map-access で
+/// AtomicAST 同梱)。conformance runner の `proj_result_export` (json_conformance_wbtest.mbt)
+/// と同じ 4 素材 (apply_export_keys / accum_cells / apply_export_to_defaults / none_cells) の
+/// 組み立て。
+fn result_to_json(
+  sc : @core.Scope,
+  ekmap : Map[String, @core.ExportKey],
+  binds : Array[@core.Binding],
+) -> Json {
   let binds2 = @core.apply_export_keys(binds, ekmap)
   let accums = @core.accum_cells(sc, ekmap)
   let defaults = @core.apply_export_to_defaults(@core.default_cells(sc), ekmap)

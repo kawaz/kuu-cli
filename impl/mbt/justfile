@@ -56,9 +56,13 @@ test: setup
     cd "{{MBT_ROOT}}" && moon test cli/src/lib --target native
     cd "{{MBT_ROOT}}" && just e2e
 
-# CLI レベル e2e: kuu/fixtures から 1 本選び、compiled binary が JSON を返すことを確認。
+# CLI レベル e2e: kuu/fixtures から複数本選び、compiled binary が JSON を返すことを確認。
 # spec fixture との厳密比較は conformance runner (kuu.mbt 側) の関心で、ここでは
 # 「compiled binary が動く / JSON が壊れずに出る / expect の代表値が乗る」の 3 点を pin する。
+# 現在の pin 対象:
+#   - multiple-parse/separator-typed.json (separator + type parse の輪郭)
+#   - export-key/rename.json              (export_key 適用: result key rename、front_door
+#                                          export_map(ast) 経路の実機確認)
 [script]
 e2e:
     cd "{{MBT_ROOT}}" && moon build --target native
@@ -71,27 +75,57 @@ e2e:
       printf >&2 "e2e: main binary not found under _build/native\n"
       exit 2
     fi
+    def_only=$(mktemp)
+    trap 'rm -f "$def_only"' EXIT
+
+    # ── case 1: multiple-parse/separator-typed.json :: option-separator-number-success ──
     fixture="{{KUU_SPEC_ROOT}}/fixtures/multiple-parse/separator-typed.json"
     if [[ ! -f "$fixture" ]]; then
       printf >&2 "e2e: fixture not found at %s (kawaz/kuu checkout missing?)\n" "$fixture"
       exit 2
     fi
-    # fixture case option-separator-number-success: expect success + result.ports=[5,7]
-    def_only=$(mktemp)
-    trap 'rm -f "$def_only"' EXIT
-    # extract just the definition object using jq (fixtures are self-describing multi-case docs)
     jq '.definition' "$fixture" > "$def_only"
     out=$("$bin" parse "$def_only" -- --ports 5,7)
     outcome=$(echo "$out" | jq -r '.outcome')
     ports=$(echo "$out" | jq -c '.result.ports')
     if [[ "$outcome" != "success" ]]; then
-      printf >&2 "e2e FAIL: expected outcome=success, got %s\n" "$outcome"
+      printf >&2 "e2e FAIL (separator-typed): expected outcome=success, got %s\n" "$outcome"
       echo >&2 "$out"
       exit 1
     fi
     if [[ "$ports" != "[5,7]" ]]; then
-      printf >&2 "e2e FAIL: expected result.ports=[5,7], got %s\n" "$ports"
+      printf >&2 "e2e FAIL (separator-typed): expected result.ports=[5,7], got %s\n" "$ports"
       echo >&2 "$out"
       exit 1
     fi
-    printf "e2e OK: %s option-separator-number-success -> success, ports=[5,7]\n" "$(basename "$fixture")"
+    printf "e2e OK: separator-typed.json option-separator-number-success -> success, ports=[5,7]\n"
+
+    # ── case 2: export-key/rename.json :: rename-projection ──
+    # export_key: "alias" が result キーを rename し、effects の entity は cell name のまま
+    # (front_door export_map(ast) 経由の ekmap が実機で効いていることを CLI 層で pin する)。
+    fixture="{{KUU_SPEC_ROOT}}/fixtures/export-key/rename.json"
+    if [[ ! -f "$fixture" ]]; then
+      printf >&2 "e2e: fixture not found at %s\n" "$fixture"
+      exit 2
+    fi
+    jq '.definition' "$fixture" > "$def_only"
+    out=$("$bin" parse "$def_only" -- --port 80)
+    outcome=$(echo "$out" | jq -r '.outcome')
+    result=$(echo "$out" | jq -c '.result')
+    ent=$(echo "$out" | jq -r '.effects[0].entity')
+    if [[ "$outcome" != "success" ]]; then
+      printf >&2 "e2e FAIL (rename): expected outcome=success, got %s\n" "$outcome"
+      echo >&2 "$out"
+      exit 1
+    fi
+    if [[ "$result" != '{"alias":80}' ]]; then
+      printf >&2 "e2e FAIL (rename): expected result={\"alias\":80}, got %s\n" "$result"
+      echo >&2 "$out"
+      exit 1
+    fi
+    if [[ "$ent" != "port" ]]; then
+      printf >&2 "e2e FAIL (rename): expected effects[0].entity=port (cell name), got %s\n" "$ent"
+      echo >&2 "$out"
+      exit 1
+    fi
+    printf "e2e OK: rename.json rename-projection -> success, result={alias:80}, entity=port\n"

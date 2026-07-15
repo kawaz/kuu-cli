@@ -51,4 +51,4 @@ kuu validate <def.json>
 ## Known issues
 
 - `moon fmt --check` fails: the formatter (`moon` 0.1.20260709) rewrites `options("is-main": true)` → `pkgtype(kind: "executable")`, but the compiler in the same toolchain does not accept `pkgtype`. `just lint` therefore only runs `moon check`. To be resolved when a toolchain aligns the two.
-- `result` field does not apply `export_key: null / "..."` overrides — see PoC 仮置き #1 in `cli/src/lib/wire.mbt`.
+- The two remaining PoC 仮置き items (ambiguous `interpretations` reduced to a count-only shape; PoC exit-code assignment 0/1/2) are documented in the file-level comment of `cli/src/lib/wire.mbt`.

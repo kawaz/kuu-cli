@@ -80,6 +80,27 @@ test "cmd_parse success — scalar number option" {
 }
 
 ///|
+/// export_key rename: result キーが `export_key: "alias"` で上書きされ、effects の entity は
+/// 元の値セル名 `port` のまま (fixture export-key/rename.json :: rename-projection の pin する
+/// 「パース不変・結果キーのみ変化」)。front_door の `export_map(ast)` から取得した ekmap が
+/// 効いていることを直接検証する — 空 ekmap の頃は result.port になっていた case。
+test "cmd_parse export_key: result キーだけ rename、effects の entity は cell name" {
+  let def =
+    #|{"options": [{"name": "port", "type": "number", "long": true, "export_key": "alias"}]}
+  let r = cmd_parse(def, ["--port", "80"])
+  inspect(r.exit, content="0")
+  let j = @json.parse(r.json)
+  inspect(jstr(jkey(j, "outcome")), content="success")
+  // result のキーは export_key で rename 済 (`alias`、`port` ではない)
+  let result = jkey(j, "result")
+  inspect(jnum(jkey(result, "alias")), content="80")
+  // effects の entity は cell name のまま (rename の pin 半分)
+  let effects = jarr(jkey(j, "effects"))
+  inspect(effects.length(), content="1")
+  inspect(jstr(jkey(effects[0], "entity")), content="port")
+}
+
+///|
 /// failure path with a type-parse reject (fixture pattern separator-typed.json ::
 /// option-separator-piece-parse-rejected — the 2nd piece 'abc' fails number type parse).
 test "cmd_parse failure — number type parse rejects 'abc'" {
