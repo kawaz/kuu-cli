@@ -370,9 +370,10 @@ conformance:
       "$pass" "$total" "$fail" "$blocked" "$skip"
     # 回帰 gate (統括裁定 r27m18-1): pass 数が baseline を割ったら red。baseline は fail の
     # 解消に合わせて**手動**で上げる (自動追従は ratchet の逆回転 = 新規 fail を隠すので不可)。
-    # 現 baseline の根拠: DR-109 envelope 追随後の 533 (2026-07-16、残 fail 23 は全て裁定待ち
-    # or kuu.mbt 管轄調査中 — docs/findings/2026-07-16-conformance-fail-taxonomy.md)。
-    baseline=533
+    # 現 baseline の根拠: kuu.mbt の K カテゴリ根本修正 (front_door.resolve の #row/#fire
+    # sentinel merge、pin d281f155) 追随後の 555 (2026-07-16)。残 fail 1 = export-key
+    # single-exposure-ok (UX-Q7R 再裁定待ち)。
+    baseline=555
     if [[ "$pass" -lt "$baseline" ]]; then
       printf >&2 "conformance REGRESSION: pass=%d fell below baseline=%d\n" "$pass" "$baseline"
       exit 1
