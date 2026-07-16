@@ -463,7 +463,7 @@ fn cand_to_json(c : @engine.Cand) -> Json {
   }
   fields.push(("is_value", Json::boolean(c.is_value)))
   if c.is_value {
-    fields.push(("ty", Json::string(c.ty)))
+    fields.push(("type", Json::string(c.ty)))
   }
   fields.push(("origin", Json::string(c.origin)))
   fields.push(("term", Json::string(term_str(c.term))))
