@@ -7,7 +7,7 @@
 
 ## 判明した事実
 
-- sweep 母数の訂正: 当初の 547 case は glob `*/*.json` の 1 階層走査で、`fixtures/lowering/<sub>/` と `fixtures/value-sources/config/` 等の 2 階層 fixture を取りこぼしていた。find 走査に直した確定値は **parse 565 case 中 245 pass / 320 fail、skip 91** (complete 25 + definition_error 31 + lower 系ほか)。
+- sweep 母数の訂正: 当初の 547 case は glob `*/*.json` の 1 階層走査で、`fixtures/lowering/<sub>/` と `fixtures/value-sources/config/` 等の 2 階層 fixture を取りこぼしていた。find 走査に直した確定値は **parse 565 case 中 245 pass / 320 fail、skip 73** (complete / definition_error / lower 系の非 parse query)。
 - fail は **12 カテゴリで全 415 key 不一致を尽くし、残余 (G-other) は 11 件**。4 系統仮説 (sources / message / Infinity / scope) はおおむね成立するが、それより大きい軸として **B (env/config/tty 入力の未対応) 106 件**が隠れていた。
 - **真の実装 bug と思われるものは G-other 内の 1 件のみ**: `export-key/collision.json :: single-exposure-ok` — `--a` 単独発火で `result.x` が `false` (期待 `true`)。共露出検査は動くのに、単独露出時の値射影が「未発火 b の preset default false」で上書きされている疑い。ただし fixture の why 自体が「preset default が export_key 共露出に参加するかは要確認 (§divergence)」と記しており、**spec 側の未確定点と絡む**。kuu.mbt (参照実装) 側の挙動確認が先。
 - 残りは全て「未実装機能」か「射影の仕様裁定待ち」に落ち、**分類不能な謎の fail はゼロ**。
