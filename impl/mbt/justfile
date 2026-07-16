@@ -254,7 +254,9 @@ conformance:
     def_only=$(mktemp); fail_log=$(mktemp)
     trap 'rm -f "$def_only" "$fail_log"' EXIT
     pass=0; fail=0; skip=0
-    for fx in "$fixtures_root"/*/*.json; do
+    # find で全階層を走査 (lowering/ は fixtures/lowering/<sub>/*.json の 2 階層構成なので
+    # glob */*.json だと skip 集計からも漏れる)
+    while IFS= read -r fx; do
       rel="${fx#"$fixtures_root"/}"
       query=$(jq -r '.query // "parse"' "$fx")
       n_cases=$(jq -r '.cases | length' "$fx")
@@ -287,9 +289,26 @@ conformance:
         done
         if [[ "$case_ok" == 1 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
       done
-    done
+    done < <(find "$fixtures_root" -name '*.json' | sort)
     total=$((pass + fail))
     echo "──── conformance sweep (parse fixtures, informational) ────"
     if [[ -s "$fail_log" ]]; then cat "$fail_log"; fi
+    # per-directory 集計: envelope 追随の進捗を系統 (fixture ディレクトリ) 別に追うための内訳
+    echo "── per-directory pass rate ──"
+    awk -F' :: ' '/^FAIL /{sub(/^FAIL /,""); split($1,a,"/"); f[a[1]]++} END{for(d in f) print d, f[d]}' "$fail_log" | sort > /tmp/confdirs.$$ || true
+    for dir in "$fixtures_root"/*/; do
+      d=$(basename "$dir")
+      # parse fixture のみ対象 (skip した dir は total 0 になるので出さない)
+      dt=0
+      while IFS= read -r fx; do
+        [[ "$(jq -r '.query // "parse"' "$fx")" == "parse" ]] || continue
+        dt=$((dt + $(jq -r '.cases | length' "$fx")))
+      done < <(find "$dir" -name '*.json')
+      [[ "$dt" -gt 0 ]] || continue
+      df=$(awk -v d="$d" '$1==d{print $2}' /tmp/confdirs.$$)
+      df=${df:-0}
+      printf "  %-20s %3d/%3d pass\n" "$d" "$((dt - df))" "$dt"
+    done
+    rm -f /tmp/confdirs.$$
     printf "conformance: %d/%d parse cases pass (%d fail), %d skipped (query != parse)\n" \
       "$pass" "$total" "$fail" "$skip"
