@@ -278,9 +278,11 @@ conformance:
           continue
         fi
         case_ok=1
+        # -S でキーをソート正規化して比較 = object のキー順序を無視する構造等価
+        # (CONFORMANCE §3: key 順序は非規範。統括承認 2026-07-16 r27m9 で前倒し導入)
         for key in $(jq -r --argjson i "$i" '.cases[$i].expect | keys[]' "$fx"); do
-          want=$(jq -c --argjson i "$i" ".cases[\$i].expect.\"$key\"" "$fx")
-          got=$(jq -c ".\"$key\"" <<<"$out")
+          want=$(jq -cS --argjson i "$i" ".cases[\$i].expect.\"$key\"" "$fx")
+          got=$(jq -cS ".\"$key\"" <<<"$out")
           if [[ "$got" != "$want" ]]; then
             case_ok=0
             printf "FAIL %s :: %s (.%s: got=%s want=%s)\n" "$rel" "$id" "$key" "$got" "$want" >> "$fail_log"
