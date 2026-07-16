@@ -52,7 +52,6 @@ fn[T] die(code : Int) -> T {
 fn eprintln(s : String) -> Unit {
   let bytes = @utf8.encode(s + "\n")
   let _ = c_write(2, bytes, bytes.length())
-
 }
 
 ///|
@@ -103,7 +102,7 @@ extern "c" fn c_isatty(fd : Int) -> Int = "isatty"
 
 ///|
 /// parse subcommand の usage (エラー時 stderr 表示の共通素材)。
-const PARSE_USAGE : String = "kuu parse <def.json> [--no-env] [--no-config] [--env k=v]... [--config <json|file>] [--tty <json>] [--] <args...>"
+const PARSE_USAGE : String = "kuu parse <def.json> [--no-env] [--no-config] [--env k=v]... [--config <json|file>] [--config-file <path> <json|file>]... [--tty <json>] [--] <args...>"
 
 ///|
 /// `kuu parse <def.json> [options] [--] <args...>`。<def.json> の後ろの `--` は POSIX-ish な
@@ -117,9 +116,17 @@ const PARSE_USAGE : String = "kuu parse <def.json> [--no-env] [--no-config] [--e
 ///   --no-env           実環境変数を無視する (注入 --env のみが env 面に残る)
 ///   --env k=v          env に k=v を注入 (繰返し可、実環境より優先 = 上書き)
 ///   --no-config        config 供給を空に固定する
-///   --config <json|file>  config オブジェクトを JSON 文字列 or ファイルパスで注入
+///   --config <json|file>  config オブジェクトを JSON 文字列 or ファイルパスで注入 (path 不問で
+///                         同一 config を返す provider)
+///   --config-file <path> <json|file>  path→config のマップを供給する provider を組む (2 引数形、
+///                         繰返し可)。fixture の `config_files` 表記に対応 (path.json の
+///                         path ladder 動的解決)。マップ外パスの照会は None (供給なし) を返す
 ///   --tty <json>       tty 観測を固定 (例: '{"stdout":{"terminal":true,"cygwin":false}}')。
 ///                      未指定は isatty(3) の実観測 (cygwin は false — MSYS/Cygwin 検出は将来)
+///
+/// --no-config / --config / --config-file は互いに排他 (使うのは 1 種類のみ)。同時指定は usage
+/// error。--config-file は繰返し可 (同 path の 2 度指定は後勝ち、fixture にそのような case は無い
+/// が実装の一貫性のため)。
 fn run_parse(args : Array[String]) -> @lib.CmdResult {
   if args.length() == 0 {
     usage_die("kuu parse: missing <def.json>", PARSE_USAGE)
@@ -136,6 +143,9 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
   let mut no_config = false
   let env_overrides : Array[(String, String)] = []
   let mut config_text : String? = None
+  // config_file 注入: (path, json|file) の並び (繰返し可)。順序保持のため配列で受け、
+  // マップ構築時に後勝ちで畳む。
+  let config_file_entries : Array[(String, String)] = []
   let mut tty_text : String? = None
   let parse_args : Array[String] = []
   let mut i = 1
@@ -160,12 +170,21 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
       let kv = args[i + 1]
       match split_once(kv, '=') {
         Some(pair) => env_overrides.push(pair)
-        None => usage_die("kuu parse: --env expects k=v, got '" + kv + "'", PARSE_USAGE)
+        None =>
+          usage_die(
+            "kuu parse: --env expects k=v, got '" + kv + "'",
+            PARSE_USAGE,
+          )
       }
       i = i + 2
     } else if a == "--config" && i + 1 < args.length() {
       config_text = Some(args[i + 1])
       i = i + 2
+    } else if a == "--config-file" && i + 2 < args.length() {
+      // 2 引数形 (UX-Q8 裁定 2026-07-16): `=` 繋ぎはパス内 `=` と衝突するため不採用、seq 多値
+      // の dogfooding として 2 引数の並びで受ける。
+      config_file_entries.push((args[i + 1], args[i + 2]))
+      i = i + 3
     } else if a == "--tty" && i + 1 < args.length() {
       tty_text = Some(args[i + 1])
       i = i + 2
@@ -177,18 +196,75 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
     }
   }
 
+  // 排他チェック (--no-config / --config / --config-file は同時に 2 種以上使えない)。
+  let mut mode_count = 0
+  if no_config {
+    mode_count = mode_count + 1
+  }
+  if config_text is Some(_) {
+    mode_count = mode_count + 1
+  }
+  if config_file_entries.length() > 0 {
+    mode_count = mode_count + 1
+  }
+  if mode_count > 1 {
+    usage_die(
+      "kuu parse: --no-config / --config / --config-file are mutually exclusive",
+      PARSE_USAGE,
+    )
+  }
+
   // env 面: 実環境既定 (DR-109 §6) → --no-env で空に → --env k=v を上書き注入。
-  let env : Map[String, String] = if no_env { Map([]) } else { @env.get_env_vars() }
+  let env : Map[String, String] = if no_env {
+    Map([])
+  } else {
+    @env.get_env_vars()
+  }
   for kv in env_overrides {
     env.set(kv.0, kv.1)
   }
 
-  // config 面: --config 注入 (JSON 文字列 or ファイルパス) > --no-config > 既定 (供給なし)。
-  // 既定の「実 config ファイル読み」は definition の config_file 宣言がパスを解決する形
-  // (DR-050) なので、provider の既定は「パスを受けたらファイルを読んで config_from_json」。
-  // --no-config はその実ファイル読みを塞ぐ。
+  // config 面: --config-file (path→config マップ注入) > --config (単一 config 注入) >
+  // --no-config (全パス None) > 既定 (definition の config_file が解決したパスの実ファイル読み)。
+  // 3 者は排他 (上で検査済) なので分岐は 4-way match。
   let config : (String) -> @core.ConfigVal? = if no_config {
     fn(_p) { None }
+  } else if config_file_entries.length() > 0 {
+    // path→ConfigVal のマップを構築 (後勝ち)。マップ外パスの照会は None (供給なし)。
+    // fixture の `config_files` 表記 (path.json の path ladder 動的解決) に対応する provider。
+    let map : Map[String, @core.ConfigVal] = Map([])
+    for entry in config_file_entries {
+      let path = entry.0
+      let text = entry.1
+      let j = @json.parse(text) catch {
+        _ =>
+          match read_file_all(text) {
+            Ok(s) =>
+              @json.parse(s) catch {
+                _ =>
+                  usage_die(
+                    "kuu parse: --config-file '" +
+                    path +
+                    "' value '" +
+                    text +
+                    "' is neither valid JSON nor a readable JSON file",
+                    PARSE_USAGE,
+                  )
+              }
+            Err(_) =>
+              usage_die(
+                "kuu parse: --config-file '" +
+                path +
+                "' value '" +
+                text +
+                "' is neither valid JSON nor a readable JSON file",
+                PARSE_USAGE,
+              )
+          }
+      }
+      map.set(path, @core.config_from_json(j))
+    }
+    fn(p) { map.get(p) }
   } else {
     match config_text {
       Some(t) => {
@@ -310,8 +386,7 @@ fn split_once(s : String, sep : Char) -> (String, String)? {
 fn run_complete(args : Array[String]) -> @lib.CmdResult {
   if args.length() == 0 {
     usage_die(
-      "kuu complete: missing <def.json>",
-      "kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]",
+      "kuu complete: missing <def.json>", "kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]",
     )
   }
   let def_path = args[0]
@@ -343,8 +418,7 @@ fn run_complete(args : Array[String]) -> @lib.CmdResult {
   }
   if before_text == "" {
     usage_die(
-      "kuu complete: missing --args-before",
-      "kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]",
+      "kuu complete: missing --args-before", "kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]",
     )
   }
   let before = match parse_str_array(before_text) {
@@ -447,8 +521,14 @@ fn usage_text() -> String {
     #|  --no-env             ignore real environment variables
     #|  --env k=v            inject/override an env var (repeatable)
     #|  --no-config          disable config-file reading
-    #|  --config <json|file> supply the config object directly (JSON text or a JSON file path)
+    #|  --config <json|file> supply the config object directly (JSON text or a JSON file path);
+    #|                       the provider returns the same value for every requested path
+    #|  --config-file <path> <json|file>
+    #|                       inject a path→config map entry (repeatable, 2-arg form); the
+    #|                       provider returns the mapped value on that path and None elsewhere
     #|  --tty <json>         pin tty observations, e.g. '{"stdout":{"terminal":true,"cygwin":false}}'
+    #|
+    #|  Note: --no-config / --config / --config-file are mutually exclusive.
     #|
     #|Exit codes: 0=success, 1=parse/validate failure, 2=usage error.
     #|Output channels: machine JSON is on stdout; human text (usage / errors) is on stderr.
