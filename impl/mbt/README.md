@@ -58,14 +58,16 @@ Runs every `query: "parse"` fixture case through the compiled binary and compare
 ## CLI reference
 
 ```sh
-kuu parse    <def.json> [--] <args...>
+kuu parse    <def.json> [options] [--] <args...>
 kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]
 kuu validate <def.json>
 ```
 
+- **Value sources** (spec DR-109 §6 — kuu-cli is NOT a test tool; it must behave like an in-app kuu): by default `parse` takes the **real environment** (env vars via the process environment, tty via `isatty(3)`, config files read from disk when the definition's `config_file` cell resolves a path). Test-fixation options: `--no-env` / `--env k=v` (repeatable override) / `--no-config` / `--config <json|file>` (direct object supply) / `--tty <json>` (pin observations, same shape as fixture `tty` input).
+- **Envelope** (spec DR-109 §2/§3/§4): output matches the conformance fixture expect vocabulary strictly — no extra fields (`message` / `scope` are not emitted; empty `element` is omitted; `warnings` is always present incl. `[]`). `sources` is always included on resolved success output. Ambiguous `interpretations` carry each interpretation's parse-phase result view (`{result, claimants}` when a co-exposure collision is present, bare view otherwise) — the value-source ladder is NOT applied to interpretations.
 - Exit 0: success. Exit 1: parse/validate failure. Exit 2: CLI usage error (PoC assignment).
 - **stdout / stderr split**: machine output (the single JSON object from `parse` / `complete` / `validate`, plus `kuu help`) is on stdout; human-oriented text (usage on startup errors, unknown subcommand, extra-arg errors) is on stderr. `kuu` (no args) / `kuu <unknown-sub>` / any subcommand missing its `<def.json>` writes usage to stderr and exits 2. `-h` short alias is intentionally NOT provided (kawaz CLI preference: short aliases only when explicitly asked for).
-- See `cli/src/lib/wire.mbt` for the emit shape and the two "PoC 仮置き" notes (ambiguous rendering and exit-code assignment) that need spec-side ratification.
+- See `cli/src/lib/wire.mbt` for the emit shape and the remaining "PoC 仮置き" note (exit-code assignment) that needs spec-side ratification.
 
 ## Known issues
 

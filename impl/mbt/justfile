@@ -253,7 +253,7 @@ conformance:
     fi
     def_only=$(mktemp); fail_log=$(mktemp)
     trap 'rm -f "$def_only" "$fail_log"' EXIT
-    pass=0; fail=0; skip=0
+    pass=0; fail=0; skip=0; blocked=0
     # find で全階層を走査 (lowering/ は fixtures/lowering/<sub>/*.json の 2 階層構成なので
     # glob */*.json だと skip 集計からも漏れる)
     while IFS= read -r fx; do
@@ -267,10 +267,40 @@ conformance:
       jq '.definition' "$fx" > "$def_only"
       for i in $(seq 0 $((n_cases - 1))); do
         id=$(jq -r --argjson i "$i" '.cases[$i].id' "$fx")
+        # blocked-skip: config_files 入力 (path→obj のマップ供給は --config 未対応、パス動的
+        # lookup の注入形が未設計) と Infinity 期待 (spec 側の表現裁定待ち、統括指示 r27m11)。
+        if jq -e --argjson i "$i" '.cases[$i] | has("config_files")' "$fx" >/dev/null; then
+          blocked=$((blocked + 1))
+          continue
+        fi
+        if jq -e --argjson i "$i" '.cases[$i].expect | tostring | test("Infinity")' "$fx" >/dev/null; then
+          blocked=$((blocked + 1))
+          continue
+        fi
         mapfile -t args < <(jq -r --argjson i "$i" '.cases[$i].args[]' "$fx")
+        # 環境固定 (DR-109 §6 の試験用オプション): 実環境継承を切り (--no-env、config は
+        # fixture が供給する場合のみ --config 注入 / 無ければ --no-config)、fixture の
+        # env / config / tty 入力を注入する — CI の環境変数・端末状態に依存した flaky を
+        # 作らないための必須固定。
+        inj_flags=(--no-env)
+        while IFS= read -r kv; do
+          [[ -n "$kv" ]] && inj_flags+=(--env "$kv")
+        done < <(jq -r --argjson i "$i" '.cases[$i].env // {} | to_entries[] | .key + "=" + .value' "$fx")
+        if jq -e --argjson i "$i" '.cases[$i] | has("config")' "$fx" >/dev/null; then
+          inj_flags+=(--config "$(jq -c --argjson i "$i" '.cases[$i].config' "$fx")")
+        else
+          inj_flags+=(--no-config)
+        fi
+        if jq -e --argjson i "$i" '.cases[$i] | has("tty")' "$fx" >/dev/null; then
+          inj_flags+=(--tty "$(jq -c --argjson i "$i" '.cases[$i].tty' "$fx")")
+        else
+          # tty 未指定 fixture は「観測なし」が前提 (キー不在 = 提供なし、DR-099 §4) なので
+          # 実観測を空 map に固定する
+          inj_flags+=(--tty '{}')
+        fi
         # 出力比較なので exit code は見ない (failure/ambiguous も JSON は stdout に出る)
         set +e
-        out=$("$bin" parse "$def_only" -- "${args[@]}" 2>/dev/null)
+        out=$("$bin" parse "$def_only" "${inj_flags[@]}" -- "${args[@]}" 2>/dev/null)
         set -e
         if ! jq -e . <<<"$out" >/dev/null 2>&1; then
           fail=$((fail + 1))
@@ -279,10 +309,34 @@ conformance:
         fi
         case_ok=1
         # -S でキーをソート正規化して比較 = object のキー順序を無視する構造等価
-        # (CONFORMANCE §3: key 順序は非規範。統括承認 2026-07-16 r27m9 で前倒し導入)
+        # (CONFORMANCE §3: key 順序は非規範。統括承認 2026-07-16 r27m9 で前倒し導入)。
+        # さらに §3 の比較規約に合わせた field 別の正規化:
+        #   - errors: 集合比較 (sort)。reason / path は fixture 側に書かれた要素でのみ比較
+        #     (optional 検証) — got 側の当該 key を want に無い場合だけ落とす
+        #   - interpretations / tried_triggers / warnings: 集合比較 (列挙順は非規範、sort)
+        #   - effects: 配列順込み完全一致 (順序が同一性成分) — 正規化しない
         for key in $(jq -r --argjson i "$i" '.cases[$i].expect | keys[]' "$fx"); do
-          want=$(jq -cS --argjson i "$i" ".cases[\$i].expect.\"$key\"" "$fx")
-          got=$(jq -cS ".\"$key\"" <<<"$out")
+          case "$key" in
+            errors)
+              want=$(jq -cS --argjson i "$i" '.cases[$i].expect.errors | [.[] | if .path == [] then del(.path) else . end] | sort_by(tostring)' "$fx")
+              got=$(jq -cS --argjson i "$i" --slurpfile fxs <(jq -c --argjson i "$i" '.cases[$i].expect.errors' "$fx") '
+                .errors as $g | $fxs[0] as $w |
+                [$g[]? | . as $e |
+                  (if ([$w[] | has("reason")] | any | not) then del(.reason) else . end) |
+                  (if ([$w[] | has("path")]   | any | not) or .path == [] then del(.path) else . end)
+                ] | sort_by(tostring)' <<<"$out")
+              ;;
+            interpretations|tried_triggers|warnings)
+              want=$(jq -cS --argjson i "$i" ".cases[\$i].expect.\"$key\" | sort_by(tostring)" "$fx")
+              got=$(jq -cS ".\"$key\" | if type==\"array\" then sort_by(tostring) else . end" <<<"$out")
+              ;;
+            *)
+              # walk(.+0): JSON 数値の表現差 (-1.0 vs -1) を値で正規化 (構造等価 = 表現非規範、
+              # jq はパース時に literal 表現を保持するため明示正規化が要る)
+              want=$(jq -cS --argjson i "$i" ".cases[\$i].expect.\"$key\" | walk(if type==\"number\" then .+0 else . end)" "$fx")
+              got=$(jq -cS ".\"$key\" | walk(if type==\"number\" then .+0 else . end)" <<<"$out")
+              ;;
+          esac
           if [[ "$got" != "$want" ]]; then
             case_ok=0
             printf "FAIL %s :: %s (.%s: got=%s want=%s)\n" "$rel" "$id" "$key" "$got" "$want" >> "$fail_log"
@@ -312,5 +366,5 @@ conformance:
       printf "  %-20s %3d/%3d pass\n" "$d" "$((dt - df))" "$dt"
     done
     rm -f /tmp/confdirs.$$
-    printf "conformance: %d/%d parse cases pass (%d fail), %d skipped (query != parse)\n" \
-      "$pass" "$total" "$fail" "$skip"
+    printf "conformance: %d/%d parse cases pass (%d fail), %d blocked-skip (config_files/Infinity), %d skipped (query != parse)\n" \
+      "$pass" "$total" "$fail" "$blocked" "$skip"

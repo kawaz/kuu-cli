@@ -14,12 +14,16 @@
 // 引数で受け、`resolve` も同じ引数を受ける (現状 kuu-cli は 3 系ともデフォルト = 空 で呼ぶ、
 // CLI 面からの供給は今回スコープ外だが玄関 API としては存在する)。
 //
-// 出力 JSON の内訳:
+// 出力 JSON の内訳 (spec DR-109 §2 = fixture expect と厳密一致、余剰フィールドは出さない):
 //   - `effects`: parse Success の生 binds (resolve 前) から DR-045 §1 効果列を組む
 //   - `result`: resolve Success の解決済み binds (値源ラダー充填後) から DR-052 result-key 軸
 //     を適用した kv projection
+//   - `sources`: resolve 済み出力に常時含める (DR-109 §3)。entity → 値源タグのマップ、キーは
+//     scope-path 修飾 (CONFORMANCE §2)
 //   - `warnings`: `warnings_structured(parse_outcome)` → `{element, kind}` の object 配列
-//     (spec CONFORMANCE §2)
+//     (spec CONFORMANCE §2)。空でも `[]` を出す (fixture の `warnings: []` 期待と厳密一致)
+//   - `interpretations` (ambiguous): 各解釈の `{result, claimants?}` (DR-053 §3 / DR-073)。
+//     resolve 相は適用しない (DR-109 §4 — parse 相の骨格のみ)
 //
 // resolve 相の失敗 (DR-066 env/config seat parse 失敗、DR-009 §7 filter reject) は Outcome を
 // Failure に転落させ、parse Success + resolve Failure の場合も Failure JSON を出す (spec
@@ -27,16 +31,8 @@
 //
 // 【PoC 仮置き — 統括が正本化する材料】
 //
-// 1. `interpretations` (ambiguous) は個数のみを返す (`{"outcome":"ambiguous","interpretations":N}`
-//    ではなく `{"outcome":"ambiguous","interpretations":[空 object×N]}` で数だけ pin する)。
-//    各 interpretation の詳細 (binds / claimants) をどの粒度で JSON 化するかは spec 側で
-//    未確定 (DR-053 §3 / DR-073) — CONFORMANCE.md の compact 表現との対応を後日決める。
-//    ekmap は `export_map(ast)` で入手済みなので、interpretation binds を射影する形が固まれば
-//    そのまま渡せる (現状は個数だけなので未使用)。
-//
-// 2. exit code は `--help` 系 (未実装) を除き 3 値: 0=成功、1=parse failure / validate 失敗、
-//    2=CLI 使い方エラー (unknown subcommand, malformed args JSON 等)。PoC の暫定割当、後日
-//    正本化。
+// exit code は `--help` 系 (未実装) を除き 3 値: 0=成功、1=parse failure / validate 失敗、
+// 2=CLI 使い方エラー (unknown subcommand, malformed args JSON 等)。PoC の暫定割当、後日正本化。
 
 ///|
 /// A subcommand result: the JSON string to write to stdout, plus the process exit code.
@@ -53,7 +49,16 @@ pub(all) struct CmdResult {
 /// `kuu parse <def_json_text> -- <args...>`: parse `args` against the definition and emit the
 /// outcome JSON (see file-level comment for the shape). exit 0 on success, 1 on failure /
 /// ambiguous / definition-error, 2 on malformed def JSON.
-pub fn cmd_parse(def_text : String, args : Array[String]) -> CmdResult {
+///
+/// env / config / tty は値源ラダーの供給源 (DR-109 §6: 既定 = 実環境、試験用オプションで
+/// 固定・注入)。呼び出し側 (main.mbt) が実環境取得とオプション解釈を済ませた形で渡す。
+pub fn cmd_parse(
+  def_text : String,
+  args : Array[String],
+  env? : Map[String, String] = Map([]),
+  config? : (String) -> @core.ConfigVal? = fn(_p) { None },
+  tty? : Map[String, @core.TtyObs] = Map([]),
+) -> CmdResult {
   let defj = @json.parse(def_text) catch {
     _ =>
       return {
@@ -68,8 +73,8 @@ pub fn cmd_parse(def_text : String, args : Array[String]) -> CmdResult {
       { json: error_json("malformed_definition", reason), exit: 1 }
     Err(@core.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
     Ok(ast) => {
-      let outcome = @core.parse(ast, args)
-      let (obj, exit) = outcome_to_json(ast, outcome, args)
+      let outcome = @core.parse(ast, args, env~, config~, tty~)
+      let (obj, exit) = outcome_to_json(ast, outcome, args, env, config, tty)
       { json: obj.stringify(indent=2), exit }
     }
   }
@@ -164,27 +169,34 @@ fn outcome_to_json(
   ast : @core.AtomicAST,
   po : @core.Outcome,
   args : Array[String],
+  env : Map[String, String],
+  config : (String) -> @core.ConfigVal?,
+  tty : Map[String, @core.TtyObs],
 ) -> (Json, Int) {
   let ekmap = @core.export_map(ast)
   match po {
     @core.Success(pbinds) => {
       // parse 段の効果列は生 binds を素材にする (DR-045 §1 = cli fold の観測)。
       let effects = effects_to_json(ast.root, pbinds)
-      // resolve 相を通して値源ラダー (env / config / inherit / default) を充填。env / config / tty
-      // は現状デフォルト (空) — CLI からの供給は今回スコープ外だが玄関 API としては受けられる。
-      let ro = @core.resolve(ast, po, args)
+      // resolve 相を通して値源ラダー (env / config / inherit / default) を充填 (DR-109 §7 =
+      // 既定で resolve 適用、値源は §6 の実環境 / 試験用オプション経由で呼び出し側が確定済み)。
+      let ro = @core.resolve(ast, po, args, env~, config~, tty~)
       match ro {
         @core.Success(rbinds) => {
-          let result = result_to_json(ast.root, ekmap, rbinds)
+          // result / sources は front_door の production 射影 (kuu.mbt MDR-005 追記、DR-109 §5
+          // の昇格) を使う — runner から写した 4 素材の手組みは重複だったので新 API に置換。
+          let result = rval_to_json(@core.result(ast, rbinds))
+          let sources = source_entries_to_json(@core.sources(ast, rbinds))
+          // warnings は空でも `[]` を出す (DR-109 §2 の厳密一致 — fixture の `warnings: []`
+          // 期待と同形)。
           let ws = @core.warnings_structured(po)
           let fields : Array[(String, Json)] = [
             ("outcome", Json::string("success")),
             ("effects", effects),
             ("result", result),
+            ("sources", sources),
+            ("warnings", warnings_to_json(ws)),
           ]
-          if ws.length() > 0 {
-            fields.push(("warnings", warnings_to_json(ws)))
-          }
           (Json::object(Map::from_array(fields)), 0)
         }
         @core.Failure(d) => {
@@ -209,10 +221,33 @@ fn outcome_to_json(
     }
     @core.Failure(d) => (failure_to_json(d, po), 1)
     @core.Ambiguous(d) => {
-      // PoC 仮置き #1: interpretation の詳細は spec 未確定なので個数だけ pin する。
+      // DR-109 §4: interpretation は resolve 相を適用せず parse 相の骨格のみ返す。各解釈は
+      // result ビュー (claimants 無し) または `{result, claimants}` (共露出衝突あり、DR-073 §1
+      // の「組で保持」)。ビューの組み立ては conformance runner の render (build_result に
+      // defaults を渡さない = ラダー未適用の parse 素材のみ) と同じ。
       let arr : Array[Json] = []
-      for _ in d.interpretations {
-        arr.push(Json::empty_object())
+      for interp in d.interpretations {
+        let view = @core.build_result(
+          @core.apply_export_keys(interp.binds, ekmap),
+          @core.accum_cells(ast.root, ekmap),
+          [],
+          [],
+          nones=@core.none_cells(ast.root),
+        )
+        if interp.claimants.length() == 0 {
+          arr.push(rval_to_json(view))
+        } else {
+          let cl : Array[(String, Json)] = []
+          for kv in interp.claimants {
+            cl.push((kv.0, Json::string(kv.1)))
+          }
+          arr.push(
+            Json::object({
+              "result": rval_to_json(view),
+              "claimants": Json::object(Map::from_array(cl)),
+            }),
+          )
+        }
       }
       let fields : Array[(String, Json)] = [
         ("outcome", Json::string("ambiguous")),
@@ -225,6 +260,23 @@ fn outcome_to_json(
       (Json::object(Map::from_array(fields)), 1)
     }
   }
+}
+
+///|
+/// `sources`: resolve 済み binds から entity → 値源タグのマップを組む (DR-109 §3 で常時出力、
+/// CONFORMANCE §2 — キーは scope-path 修飾)。射影本体は front_door の production API
+/// `@core.sources` (kuu.mbt MDR-005 追記) — ここは SourceEntry 列を JSON object に写すだけ。
+fn source_entries_to_json(entries : Array[@core.SourceEntry]) -> Json {
+  let items : Array[(String, Json)] = []
+  for e in entries {
+    let mut key = ""
+    for seg in e.path {
+      key = key + seg + "."
+    }
+    key = key + e.key
+    items.push((key, Json::string(source_str(e.source))))
+  }
+  Json::object(Map::from_array(items))
 }
 
 ///|
@@ -297,32 +349,22 @@ fn effects_to_json(sc : @core.Scope, binds : Array[@core.Binding]) -> Json {
       @core.Remove => fields.push(("operand", value_to_json(b.value)))
       _ => ()
     }
-    fields.push(("source", Json::string(source_str(b.source))))
-    if b.scope.length() > 0 {
-      fields.push(("scope", strs_to_json(b.scope)))
+    // update の transform / args (DR-077 §1/§2、CONFORMANCE §2 の effects 語彙)。
+    match b.op {
+      @core.Update(transform, targs) => {
+        fields.push(("transform", Json::string(transform)))
+        if targs.length() > 0 {
+          fields.push(("args", strs_to_json(targs)))
+        }
+      }
+      _ => ()
     }
+    fields.push(("source", Json::string(source_str(b.source))))
+    // `scope` は fixture expect の effects 語彙に無い (CONFORMANCE §2 = {entity, op, operand?,
+    // source, transform?, args?})。DR-109 §2 の厳密一致に従い出さない。
     arr.push(Json::object(Map::from_array(fields)))
   }
   Json::array(arr)
-}
-
-///|
-/// `result`: kv projection with the DR-052 result-key axis applied. `ekmap` は front_door の
-/// `export_map(ast)` から取得した写像 (issue 2026-07-15 front-door-export-key-map-access で
-/// AtomicAST 同梱)。conformance runner の `proj_result_export` (json_conformance_wbtest.mbt)
-/// と同じ 4 素材 (apply_export_keys / accum_cells / apply_export_to_defaults / none_cells) の
-/// 組み立て。
-fn result_to_json(
-  sc : @core.Scope,
-  ekmap : Map[String, @core.ExportKey],
-  binds : Array[@core.Binding],
-) -> Json {
-  let binds2 = @core.apply_export_keys(binds, ekmap)
-  let accums = @core.accum_cells(sc, ekmap)
-  let defaults = @core.apply_export_to_defaults(@core.default_cells(sc), ekmap)
-  let nones = @core.none_cells(sc)
-  let rval = @core.build_result(binds2, accums, defaults, [], nones~)
-  rval_to_json(rval)
 }
 
 ///|
@@ -359,20 +401,20 @@ fn value_to_json(v : @core.Value) -> Json {
 fn parse_errors_to_json(errs : Array[@core.ParseError]) -> Json {
   let arr : Array[Json] = []
   for e in errs {
-    let fields : Array[(String, Json)] = [
-      ("element", Json::string(e.element)),
-      ("args_pos", Json::number(e.args_pos.to_double())),
-      ("kind", Json::string(errkind_str(e.kind))),
-      ("reason", Json::string(e.reason)),
-    ]
+    let fields : Array[(String, Json)] = []
+    // element 空文字 = 帰属先なし (unexpected_token 系)。fixture expect は element キー自体を
+    // 省略する形なので、空値はフィールドごと出さない (DR-109 §2 の厳密一致)。
+    if e.element.length() > 0 {
+      fields.push(("element", Json::string(e.element)))
+    }
+    fields.push(("args_pos", Json::number(e.args_pos.to_double())))
+    fields.push(("kind", Json::string(errkind_str(e.kind))))
+    fields.push(("reason", Json::string(e.reason)))
     if e.path.length() > 0 {
       fields.push(("path", strs_to_json(e.path)))
     }
-    // message is caller-facing text only (CONFORMANCE.md §3 ignores it); we emit it as `message`
-    // so callers CAN inspect it. Fixture comparison is expected to strip it.
-    if e.message.length() > 0 {
-      fields.push(("message", Json::string(e.message)))
-    }
+    // `message` は出さない (DR-109 §2: expect に無いフィールドは出さない。CONFORMANCE §3 も
+    // message を常に無視する — 人間向けは将来の opt-in へ)。
     arr.push(Json::object(Map::from_array(fields)))
   }
   Json::array(arr)
