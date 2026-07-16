@@ -46,9 +46,10 @@ kuu validate <def.json>
 ```
 
 - Exit 0: success. Exit 1: parse/validate failure. Exit 2: CLI usage error (PoC assignment).
-- All output is a single JSON object on stdout. See `cli/src/lib/wire.mbt` for the emit shape and the three "PoC 仮置き" notes (`result` export_key application, ambiguous rendering, exit-code assignment) that need spec-side ratification.
+- **stdout / stderr split**: machine output (the single JSON object from `parse` / `complete` / `validate`, plus `kuu help`) is on stdout; human-oriented text (usage on startup errors, unknown subcommand, extra-arg errors) is on stderr. `kuu` (no args) / `kuu <unknown-sub>` / any subcommand missing its `<def.json>` writes usage to stderr and exits 2. `-h` short alias is intentionally NOT provided (kawaz CLI preference: short aliases only when explicitly asked for).
+- See `cli/src/lib/wire.mbt` for the emit shape and the two "PoC 仮置き" notes (ambiguous rendering and exit-code assignment) that need spec-side ratification.
 
 ## Known issues
 
 - `moon fmt --check` fails: the formatter (`moon` 0.1.20260709) rewrites `options("is-main": true)` → `pkgtype(kind: "executable")`, but the compiler in the same toolchain does not accept `pkgtype`. `just lint` therefore only runs `moon check`. To be resolved when a toolchain aligns the two.
-- The two remaining PoC 仮置き items (ambiguous `interpretations` reduced to a count-only shape; PoC exit-code assignment 0/1/2) are documented in the file-level comment of `cli/src/lib/wire.mbt`.
+- The two remaining "PoC 仮置き" items (ambiguous `interpretations` reduced to a count-only shape; PoC exit-code assignment 0/1/2) are documented in the file-level comment of `cli/src/lib/wire.mbt`. The former "result export_key application" note is resolved (kuu.mbt MDR-005 §1 追記 with `export_map(ast)` on `AtomicAST`, 2026-07-15).

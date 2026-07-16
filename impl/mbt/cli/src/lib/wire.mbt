@@ -209,7 +209,7 @@ fn outcome_to_json(
     }
     @core.Failure(d) => (failure_to_json(d, po), 1)
     @core.Ambiguous(d) => {
-      // PoC 仮置き #2: interpretation の詳細は spec 未確定なので個数だけ pin する。
+      // PoC 仮置き #1: interpretation の詳細は spec 未確定なので個数だけ pin する。
       let arr : Array[Json] = []
       for _ in d.interpretations {
         arr.push(Json::empty_object())
