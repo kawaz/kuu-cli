@@ -1,6 +1,6 @@
 import {
   "kawaz/kuu-cli-mbt/lib",
-  "kawaz/kuu/core",
+  "kawaz/kuu/kuu",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/env",
   "moonbitlang/core/json",

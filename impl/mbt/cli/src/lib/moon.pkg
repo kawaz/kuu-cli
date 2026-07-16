@@ -1,5 +1,5 @@
 import {
-  "kawaz/kuu/core",
+  "kawaz/kuu/kuu",
   "moonbitlang/core/json",
   "moonbitlang/core/string",
 }

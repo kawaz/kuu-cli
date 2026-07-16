@@ -227,12 +227,12 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
   // config 面: --config-file (path→config マップ注入) > --config (単一 config 注入) >
   // --no-config (全パス None) > 既定 (definition の config_file が解決したパスの実ファイル読み)。
   // 3 者は排他 (上で検査済) なので分岐は 4-way match。
-  let config : (String) -> @core.ConfigVal? = if no_config {
+  let config : (String) -> @kuu.ConfigVal? = if no_config {
     fn(_p) { None }
   } else if config_file_entries.length() > 0 {
     // path→ConfigVal のマップを構築 (後勝ち)。マップ外パスの照会は None (供給なし)。
     // fixture の `config_files` 表記 (path.json の path ladder 動的解決) に対応する provider。
-    let map : Map[String, @core.ConfigVal] = Map([])
+    let map : Map[String, @kuu.ConfigVal] = Map([])
     for entry in config_file_entries {
       let path = entry.0
       let text = entry.1
@@ -262,7 +262,7 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
               )
           }
       }
-      map.set(path, @core.config_from_json(j))
+      map.set(path, @kuu.config_from_json(j))
     }
     fn(p) { map.get(p) }
   } else {
@@ -291,7 +291,7 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
                 )
             }
         }
-        let cv = @core.config_from_json(j)
+        let cv = @kuu.config_from_json(j)
         fn(_p) { Some(cv) }
       }
       // 既定: definition が config_file でパスを解決してきたら実ファイルを読む
@@ -301,7 +301,7 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
           match read_file_all(p) {
             Ok(s) => {
               let j = @json.parse(s) catch { _ => return None }
-              Some(@core.config_from_json(j))
+              Some(@kuu.config_from_json(j))
             }
             Err(_) => None
           }
@@ -310,7 +310,7 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
   }
 
   // tty 面: --tty 固定 > 既定 (isatty(3) 実観測、cygwin=false — MSYS/Cygwin 検出は将来)。
-  let tty : Map[String, @core.TtyObs] = match tty_text {
+  let tty : Map[String, @kuu.TtyObs] = match tty_text {
     Some(t) => {
       let j = @json.parse(t) catch {
         _ => usage_die("kuu parse: --tty value is not valid JSON", PARSE_USAGE)
@@ -322,9 +322,9 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
     }
     None =>
       Map([
-        ("stdin", @core.tty_obs(c_isatty(0) == 1, false)),
-        ("stdout", @core.tty_obs(c_isatty(1) == 1, false)),
-        ("stderr", @core.tty_obs(c_isatty(2) == 1, false)),
+        ("stdin", @kuu.tty_obs(c_isatty(0) == 1, false)),
+        ("stdout", @kuu.tty_obs(c_isatty(1) == 1, false)),
+        ("stderr", @kuu.tty_obs(c_isatty(2) == 1, false)),
       ])
   }
   @lib.cmd_parse(def_text, parse_args, env~, config~, tty~)
@@ -334,10 +334,10 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
 /// `--tty` の JSON (`{"stdout":{"terminal":bool,"cygwin":bool},...}`) を Map[String, TtyObs] に
 /// decode する。fixture の `tty` 入力と同形 (DR-099 §4)。キー不在 = 提供なし、`cygwin` 省略 =
 /// false。
-fn tty_from_json(j : Json) -> Result[Map[String, @core.TtyObs], String] {
+fn tty_from_json(j : Json) -> Result[Map[String, @kuu.TtyObs], String] {
   match j {
     Object(o) => {
-      let m : Map[String, @core.TtyObs] = Map([])
+      let m : Map[String, @kuu.TtyObs] = Map([])
       for k, v in o {
         match v {
           Object(vo) => {
@@ -352,7 +352,7 @@ fn tty_from_json(j : Json) -> Result[Map[String, @core.TtyObs], String] {
               None => false
               _ => return Err("stream '" + k + "' has non-boolean 'cygwin'")
             }
-            m.set(k, @core.tty_obs(terminal, cygwin))
+            m.set(k, @kuu.tty_obs(terminal, cygwin))
           }
           _ => return Err("stream '" + k + "' value must be an object")
         }

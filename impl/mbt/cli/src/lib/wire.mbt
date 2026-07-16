@@ -56,8 +56,8 @@ pub fn cmd_parse(
   def_text : String,
   args : Array[String],
   env? : Map[String, String] = Map([]),
-  config? : (String) -> @core.ConfigVal? = fn(_p) { None },
-  tty? : Map[String, @core.TtyObs] = Map([]),
+  config? : (String) -> @kuu.ConfigVal? = fn(_p) { None },
+  tty? : Map[String, @kuu.TtyObs] = Map([]),
 ) -> CmdResult {
   let defj = @json.parse(def_text) catch {
     _ =>
@@ -68,12 +68,12 @@ pub fn cmd_parse(
         exit: 2,
       }
   }
-  match @core.parse_definition(defj) {
-    Err(@core.Malformed(reason)) =>
+  match @kuu.parse_definition(defj) {
+    Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
-    Err(@core.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
+    Err(@kuu.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
     Ok(ast) => {
-      let outcome = @core.parse(ast, args, env~, config~, tty~)
+      let outcome = @kuu.parse(ast, args, env~, config~, tty~)
       let (obj, exit) = outcome_to_json(ast, outcome, args, env, config, tty)
       { json: obj.stringify(indent=2), exit }
     }
@@ -97,12 +97,12 @@ pub fn cmd_complete(
         exit: 2,
       }
   }
-  match @core.parse_definition(defj) {
-    Err(@core.Malformed(reason)) =>
+  match @kuu.parse_definition(defj) {
+    Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
-    Err(@core.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
+    Err(@kuu.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
     Ok(ast) => {
-      let cands = @core.complete(ast, before, args_after=after)
+      let cands = @kuu.complete(ast, before, args_after=after)
       let arr : Array[Json] = []
       for c in cands {
         arr.push(cand_to_json(c))
@@ -127,13 +127,13 @@ pub fn cmd_validate(def_text : String) -> CmdResult {
         exit: 2,
       }
   }
-  match @core.parse_definition(defj) {
+  match @kuu.parse_definition(defj) {
     Ok(_) =>
       {
         json: Json::object({ "ok": Json::boolean(true) }).stringify(indent=2),
         exit: 0,
       }
-    Err(@core.Malformed(reason)) => {
+    Err(@kuu.Malformed(reason)) => {
       let obj = Json::object({
         "ok": Json::boolean(false),
         "errors": Json::array([
@@ -145,7 +145,7 @@ pub fn cmd_validate(def_text : String) -> CmdResult {
       })
       { json: obj.stringify(indent=2), exit: 1 }
     }
-    Err(@core.Rejected(errs)) => {
+    Err(@kuu.Rejected(errs)) => {
       let out = Json::object({
         "ok": Json::boolean(false),
         "errors": deferrs_to_json(errs),
@@ -166,30 +166,30 @@ pub fn cmd_validate(def_text : String) -> CmdResult {
 /// — 相区分の 2 段構成 (kuu.mbt MDR-005 §1)。resolve 相の失敗は Failure に転落させ、Failure
 /// JSON を出す。`args` は resolve が at_pos 計算 (DR-066 §4) に使う。
 fn outcome_to_json(
-  ast : @core.AtomicAST,
-  po : @core.Outcome,
+  ast : @kuu.AtomicAST,
+  po : @kuu.Outcome,
   args : Array[String],
   env : Map[String, String],
-  config : (String) -> @core.ConfigVal?,
-  tty : Map[String, @core.TtyObs],
+  config : (String) -> @kuu.ConfigVal?,
+  tty : Map[String, @kuu.TtyObs],
 ) -> (Json, Int) {
-  let ekmap = @core.export_map(ast)
+  let ekmap = @kuu.export_map(ast)
   match po {
-    @core.Success(pbinds) => {
+    @kuu.Success(pbinds) => {
       // parse 段の効果列は生 binds を素材にする (DR-045 §1 = cli fold の観測)。
       let effects = effects_to_json(ast.root, pbinds)
       // resolve 相を通して値源ラダー (env / config / inherit / default) を充填 (DR-109 §7 =
       // 既定で resolve 適用、値源は §6 の実環境 / 試験用オプション経由で呼び出し側が確定済み)。
-      let ro = @core.resolve(ast, po, args, env~, config~, tty~)
+      let ro = @kuu.resolve(ast, po, args, env~, config~, tty~)
       match ro {
-        @core.Success(rbinds) => {
+        @kuu.Success(rbinds) => {
           // result / sources は front_door の production 射影 (kuu.mbt MDR-005 追記、DR-109 §5
           // の昇格) を使う — runner から写した 4 素材の手組みは重複だったので新 API に置換。
-          let result = rval_to_json(@core.result(ast, rbinds))
-          let sources = source_entries_to_json(@core.sources(ast, rbinds))
+          let result = rval_to_json(@kuu.result(ast, rbinds))
+          let sources = source_entries_to_json(@kuu.sources(ast, rbinds))
           // warnings は空でも `[]` を出す (DR-109 §2 の厳密一致 — fixture の `warnings: []`
           // 期待と同形)。
-          let ws = @core.warnings_structured(po)
+          let ws = @kuu.warnings_structured(po)
           let fields : Array[(String, Json)] = [
             ("outcome", Json::string("success")),
             ("effects", effects),
@@ -199,7 +199,7 @@ fn outcome_to_json(
           ]
           (Json::object(Map::from_array(fields)), 0)
         }
-        @core.Failure(d) => {
+        @kuu.Failure(d) => {
           // 値源解決 (env/config seat parse や DR-009 §7 filter reject) で転落した場合は
           // failure JSON を返す (spec DR-053 §2 の failure に resolve 相失敗も含まれる)。
           // warnings は parse Outcome から取る (deprecated marker は parse 段の binds に載る)。
@@ -219,20 +219,20 @@ fn outcome_to_json(
           ), 1)
       }
     }
-    @core.Failure(d) => (failure_to_json(d, po), 1)
-    @core.Ambiguous(d) => {
+    @kuu.Failure(d) => (failure_to_json(d, po), 1)
+    @kuu.Ambiguous(d) => {
       // DR-109 §4: interpretation は resolve 相を適用せず parse 相の骨格のみ返す。各解釈は
       // result ビュー (claimants 無し) または `{result, claimants}` (共露出衝突あり、DR-073 §1
       // の「組で保持」)。ビューの組み立ては conformance runner の render (build_result に
       // defaults を渡さない = ラダー未適用の parse 素材のみ) と同じ。
       let arr : Array[Json] = []
       for interp in d.interpretations {
-        let view = @core.build_result(
-          @core.apply_export_keys(interp.binds, ekmap),
-          @core.accum_cells(ast.root, ekmap),
+        let view = @kuu.build_result(
+          @kuu.apply_export_keys(interp.binds, ekmap),
+          @kuu.accum_cells(ast.root, ekmap),
           [],
           [],
-          nones=@core.none_cells(ast.root),
+          nones=@kuu.none_cells(ast.root),
         )
         if interp.claimants.length() == 0 {
           arr.push(rval_to_json(view))
@@ -265,8 +265,8 @@ fn outcome_to_json(
 ///|
 /// `sources`: resolve 済み binds から entity → 値源タグのマップを組む (DR-109 §3 で常時出力、
 /// CONFORMANCE §2 — キーは scope-path 修飾)。射影本体は front_door の production API
-/// `@core.sources` (kuu.mbt MDR-005 追記) — ここは SourceEntry 列を JSON object に写すだけ。
-fn source_entries_to_json(entries : Array[@core.SourceEntry]) -> Json {
+/// `@kuu.sources` (kuu.mbt MDR-005 追記) — ここは SourceEntry 列を JSON object に写すだけ。
+fn source_entries_to_json(entries : Array[@kuu.SourceEntry]) -> Json {
   let items : Array[(String, Json)] = []
   for e in entries {
     let mut key = ""
@@ -282,7 +282,7 @@ fn source_entries_to_json(entries : Array[@core.SourceEntry]) -> Json {
 ///|
 /// Assemble the failure JSON (Failure outcome or resolve-layer failure). `po` は warnings 素材
 /// (deprecated marker は parse 段の binds に載る)。
-fn failure_to_json(d : @core.FailureData, po : @core.Outcome) -> Json {
+fn failure_to_json(d : @kuu.FailureData, po : @kuu.Outcome) -> Json {
   let fields : Array[(String, Json)] = [
     ("outcome", Json::string("failure")),
     ("errors", parse_errors_to_json(d.errors)),
@@ -298,7 +298,7 @@ fn failure_to_json(d : @core.FailureData, po : @core.Outcome) -> Json {
     Some(h) => fields.push(("help_entry", Json::string(h)))
     None => ()
   }
-  let ws = @core.warnings_structured(po)
+  let ws = @kuu.warnings_structured(po)
   if ws.length() > 0 {
     fields.push(("warnings", warnings_to_json(ws)))
   }
@@ -307,9 +307,9 @@ fn failure_to_json(d : @core.FailureData, po : @core.Outcome) -> Json {
 
 ///|
 /// `warnings`: spec CONFORMANCE §2 が要求する `{element, kind}` の object 配列。素材は
-/// `@core.warnings_structured` (kuu.mbt eval.mbt、旧 `warnings_of` の element 配列を kind 情報
+/// `@kuu.warnings_structured` (kuu.mbt eval.mbt、旧 `warnings_of` の element 配列を kind 情報
 /// つきに拡張したもの、codex M-1 解消)。
-fn warnings_to_json(ws : Array[@core.Warning]) -> Json {
+fn warnings_to_json(ws : Array[@kuu.Warning]) -> Json {
   let arr : Array[Json] = []
   for w in ws {
     arr.push(
@@ -325,14 +325,14 @@ fn warnings_to_json(ws : Array[@core.Warning]) -> Json {
 ///|
 /// `effects`: DR-045 §1 effect column. `config_file`, `TNone`, and `dd` cells are excluded
 /// (mirrors `proj_effects_ex` in json_conformance_wbtest.mbt).
-fn effects_to_json(sc : @core.Scope, binds : Array[@core.Binding]) -> Json {
+fn effects_to_json(sc : @kuu.Scope, binds : Array[@kuu.Binding]) -> Json {
   let arr : Array[Json] = []
   for b in binds {
     // sentinel (`[]` / `{}` / "" / `#row` / `#fire` / `@act:...` / `@depr:...`) は effects の
     // 素材ではない (kuu.mbt resolve.mbt の `is_sentinel`、pub 化済み — issue
     // front-door-parse-missing-postprocessing、codex M-1 の `@depr:port` が effects に漏れる
     // バグの根治)。旧 `is_sentinel_key` (`[]` / `{}` / `""` のみ) は狭すぎた。
-    if @core.is_sentinel(b.key) {
+    if @kuu.is_sentinel(b.key) {
       continue
     }
     if is_excluded_cell(sc, b.key) {
@@ -345,13 +345,13 @@ fn effects_to_json(sc : @core.Scope, binds : Array[@core.Binding]) -> Json {
     // operand: only for Set / Remove (DR-045 §1 / DR-080 §2). default / unset / empty /
     // splice / update carry no operand.
     match b.op {
-      @core.Set => fields.push(("operand", value_to_json(b.value)))
-      @core.Remove => fields.push(("operand", value_to_json(b.value)))
+      @kuu.Set => fields.push(("operand", value_to_json(b.value)))
+      @kuu.Remove => fields.push(("operand", value_to_json(b.value)))
       _ => ()
     }
     // update の transform / args (DR-077 §1/§2、CONFORMANCE §2 の effects 語彙)。
     match b.op {
-      @core.Update(transform, targs) => {
+      @kuu.Update(transform, targs) => {
         fields.push(("transform", Json::string(transform)))
         if targs.length() > 0 {
           fields.push(("args", strs_to_json(targs)))
@@ -368,17 +368,17 @@ fn effects_to_json(sc : @core.Scope, binds : Array[@core.Binding]) -> Json {
 }
 
 ///|
-fn rval_to_json(r : @core.RVal) -> Json {
+fn rval_to_json(r : @kuu.RVal) -> Json {
   match r {
-    @core.RScalar(v) => value_to_json(v)
-    @core.RArr(xs) => {
+    @kuu.RScalar(v) => value_to_json(v)
+    @kuu.RArr(xs) => {
       let arr : Array[Json] = []
       for x in xs {
         arr.push(rval_to_json(x))
       }
       Json::array(arr)
     }
-    @core.RObj(kv) => {
+    @kuu.RObj(kv) => {
       let pairs : Array[(String, Json)] = []
       for kv2 in kv {
         pairs.push((kv2.0, rval_to_json(kv2.1)))
@@ -389,16 +389,16 @@ fn rval_to_json(r : @core.RVal) -> Json {
 }
 
 ///|
-fn value_to_json(v : @core.Value) -> Json {
+fn value_to_json(v : @kuu.Value) -> Json {
   match v {
-    @core.VStr(s) => Json::string(s)
-    @core.VBool(b) => Json::boolean(b)
-    @core.VNum(d) => Json::number(d)
+    @kuu.VStr(s) => Json::string(s)
+    @kuu.VBool(b) => Json::boolean(b)
+    @kuu.VNum(d) => Json::number(d)
   }
 }
 
 ///|
-fn parse_errors_to_json(errs : Array[@core.ParseError]) -> Json {
+fn parse_errors_to_json(errs : Array[@kuu.ParseError]) -> Json {
   let arr : Array[Json] = []
   for e in errs {
     let fields : Array[(String, Json)] = []
@@ -421,13 +421,13 @@ fn parse_errors_to_json(errs : Array[@core.ParseError]) -> Json {
 }
 
 ///|
-fn def_errors_json(errs : Array[@core.DefError]) -> String {
+fn def_errors_json(errs : Array[@kuu.DefError]) -> String {
   let obj = Json::object({ "errors": deferrs_to_json(errs) })
   obj.stringify(indent=2)
 }
 
 ///|
-fn deferrs_to_json(errs : Array[@core.DefError]) -> Json {
+fn deferrs_to_json(errs : Array[@kuu.DefError]) -> Json {
   let arr : Array[Json] = []
   for e in errs {
     let fields : Array[(String, Json)] = [
@@ -455,7 +455,7 @@ fn strs_to_json(xs : Array[String]) -> Json {
 // ═════════════════════════════════════════════════════════════════════════════
 
 ///|
-fn cand_to_json(c : @core.Cand) -> Json {
+fn cand_to_json(c : @kuu.Cand) -> Json {
   let fields : Array[(String, Json)] = []
   // spelling: required for exact triggers; omitted (equivalent to "") for value positions.
   if !c.is_value {
@@ -489,50 +489,50 @@ fn cand_to_json(c : @core.Cand) -> Json {
 // ═════════════════════════════════════════════════════════════════════════════
 
 ///|
-fn effect_op_str(op : @core.EffectOp) -> String {
+fn effect_op_str(op : @kuu.EffectOp) -> String {
   match op {
-    @core.Set => "set"
-    @core.Default => "default"
-    @core.Unset => "unset"
-    @core.Empty => "empty"
-    @core.Update(_, _) => "update"
-    @core.Remove => "remove"
-    @core.Splice => "splice"
+    @kuu.Set => "set"
+    @kuu.Default => "default"
+    @kuu.Unset => "unset"
+    @kuu.Empty => "empty"
+    @kuu.Update(_, _) => "update"
+    @kuu.Remove => "remove"
+    @kuu.Splice => "splice"
   }
 }
 
 ///|
-fn source_str(s : @core.Source) -> String {
+fn source_str(s : @kuu.Source) -> String {
   match s {
-    @core.Cli => "cli"
-    @core.Env => "env"
-    @core.Config => "config"
-    @core.Inherit => "inherit"
-    @core.Tty => "tty"
-    @core.Default => "default"
+    @kuu.Cli => "cli"
+    @kuu.Env => "env"
+    @kuu.Config => "config"
+    @kuu.Inherit => "inherit"
+    @kuu.Tty => "tty"
+    @kuu.Default => "default"
   }
 }
 
 ///|
-fn errkind_str(k : @core.ErrKind) -> String {
+fn errkind_str(k : @kuu.ErrKind) -> String {
   match k {
-    @core.KParse => "parse"
-    @core.KFilter => "filter"
-    @core.KConstraint => "constraint"
+    @kuu.KParse => "parse"
+    @kuu.KFilter => "filter"
+    @kuu.KConstraint => "constraint"
   }
 }
 
 ///|
-fn deferr_kind_str(k : @core.DefErrKind) -> String {
+fn deferr_kind_str(k : @kuu.DefErrKind) -> String {
   match k {
-    @core.DVocabIntersection => "vocab-intersection"
-    @core.DUnknownVocab => "unknown-vocab"
-    @core.DInvalidRange => "invalid-range"
-    @core.DAbsentRef => "absent-ref"
-    @core.DCircularRef => "circular-ref"
-    @core.DZeroProgress => "zero-progress"
-    @core.DConfigCycle => "config-cycle"
-    @core.DInvalidArgument => "invalid-argument"
+    @kuu.DVocabIntersection => "vocab-intersection"
+    @kuu.DUnknownVocab => "unknown-vocab"
+    @kuu.DInvalidRange => "invalid-range"
+    @kuu.DAbsentRef => "absent-ref"
+    @kuu.DCircularRef => "circular-ref"
+    @kuu.DZeroProgress => "zero-progress"
+    @kuu.DConfigCycle => "config-cycle"
+    @kuu.DInvalidArgument => "invalid-argument"
   }
 }
 
@@ -541,24 +541,24 @@ fn deferr_kind_str(k : @core.DefErrKind) -> String {
 /// (`string`/`number`/`int`/`float`/`bool`) のみが値位置候補として出現する。
 /// flag/count/none は値スロットを取らないので値位置候補としては現れないが (万一渡された場合の
 /// 安全側 fallback として) スペック上の綴りを返す。
-fn ty_str(t : @core.Ty) -> String {
+fn ty_str(t : @kuu.Ty) -> String {
   match t {
-    @core.TStr => "string"
-    @core.TNum => "number"
-    @core.TInt => "int"
-    @core.TFloat => "float"
-    @core.TBool => "bool"
-    @core.TFlag => "flag"
-    @core.TCount => "count"
-    @core.TNone => "none"
+    @kuu.TStr => "string"
+    @kuu.TNum => "number"
+    @kuu.TInt => "int"
+    @kuu.TFloat => "float"
+    @kuu.TBool => "bool"
+    @kuu.TFlag => "flag"
+    @kuu.TCount => "count"
+    @kuu.TNone => "none"
   }
 }
 
 ///|
-fn term_str(t : @core.TermHint) -> String {
+fn term_str(t : @kuu.TermHint) -> String {
   match t {
-    @core.WordEnd => "word_end"
-    @core.Cont => "cont"
+    @kuu.WordEnd => "word_end"
+    @kuu.Cont => "cont"
   }
 }
 
@@ -571,7 +571,7 @@ fn term_str(t : @core.TermHint) -> String {
 /// bindings are internal markers, not user-visible effects. Mirrors the trio of exclusions in
 /// `proj_effects_ex` (json_conformance_wbtest.mbt). dd is a greedy-scan pattern — see
 /// `is_dd_cell_scan`.
-fn is_excluded_cell(sc : @core.Scope, k : String) -> Bool {
+fn is_excluded_cell(sc : @kuu.Scope, k : String) -> Bool {
   for e in sc.entities {
     if e.name == k && (e.is_config_file || is_tnone(e.ty)) {
       return true
@@ -581,9 +581,9 @@ fn is_excluded_cell(sc : @core.Scope, k : String) -> Bool {
 }
 
 ///|
-fn is_tnone(t : @core.Ty) -> Bool {
+fn is_tnone(t : @kuu.Ty) -> Bool {
   match t {
-    @core.TNone => true
+    @kuu.TNone => true
     _ => false
   }
 }
@@ -591,12 +591,12 @@ fn is_tnone(t : @core.Ty) -> Bool {
 ///|
 /// Walk the scope's greedy nodes looking for a DdSat/DdMatchSat trigger named `k`, recursing
 /// into command scopes. Mirrors `is_dd_cell` in json_conformance_wbtest.mbt.
-fn is_dd_cell_scan(sc : @core.Scope, k : String) -> Bool {
-  fn scan(g : @core.Node) -> Bool {
+fn is_dd_cell_scan(sc : @kuu.Scope, k : String) -> Bool {
+  fn scan(g : @kuu.Node) -> Bool {
     match g {
-      @core.DdSat(trigger) => trigger == k
-      @core.DdMatchSat(_, _, _, elem_name) => elem_name == k
-      @core.Or(alts) => {
+      @kuu.DdSat(trigger) => trigger == k
+      @kuu.DdMatchSat(_, _, _, elem_name) => elem_name == k
+      @kuu.Or(alts) => {
         for a in alts {
           if scan(a) {
             return true
@@ -604,8 +604,8 @@ fn is_dd_cell_scan(sc : @core.Scope, k : String) -> Bool {
         }
         false
       }
-      @core.Rooted(inner, _) => scan(inner)
-      @core.CmdSat(_, child) => is_dd_cell_scan(child, k)
+      @kuu.Rooted(inner, _) => scan(inner)
+      @kuu.CmdSat(_, child) => is_dd_cell_scan(child, k)
       _ => false
     }
   }
