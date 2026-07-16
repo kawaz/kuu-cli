@@ -1,8 +1,29 @@
 // wire.mbt — kuu-cli MoonBit PoC の subcommand core (parse / complete / validate).
 //
 // `impl/mbt` の Design 目的は spec (kawaz/kuu) の CLI 入出力契約の輪郭を固めること (kuu-cli
-// DR-0001 §3)。ここでは kuu.mbt (参照実装) の front_door 3 関数 (parse_definition / parse /
-// complete) を直接呼び、fixture `expect` と概ね同じ語彙の JSON を stdout に emit する。
+// DR-0001 §3)。ここでは kuu.mbt (参照実装) の front_door 4 関数 (parse_definition / parse /
+// resolve / complete) を直接呼び、fixture `expect` と概ね同じ語彙の JSON を stdout に emit
+// する。
+//
+// 【front_door 2 段構成】(kuu.mbt MDR-005 §1 追記、2026-07-16、issue
+// front-door-parse-missing-postprocessing の kuu-cli 側追随):
+//
+// 玄関 API は `parse` (spec 準拠の Outcome 骨格 = parse_tree + apply_requires_filter +
+// promote_collision_ambiguous) と `resolve` (値源ラダー = env / config / inherit / default
+// seat fill を子 scope まで再帰的に充填) の 2 段。`parse` は env / config / tty を optional
+// 引数で受け、`resolve` も同じ引数を受ける (現状 kuu-cli は 3 系ともデフォルト = 空 で呼ぶ、
+// CLI 面からの供給は今回スコープ外だが玄関 API としては存在する)。
+//
+// 出力 JSON の内訳:
+//   - `effects`: parse Success の生 binds (resolve 前) から DR-045 §1 効果列を組む
+//   - `result`: resolve Success の解決済み binds (値源ラダー充填後) から DR-052 result-key 軸
+//     を適用した kv projection
+//   - `warnings`: `warnings_structured(parse_outcome)` → `{element, kind}` の object 配列
+//     (spec CONFORMANCE §2)
+//
+// resolve 相の失敗 (DR-066 env/config seat parse 失敗、DR-009 §7 filter reject) は Outcome を
+// Failure に転落させ、parse Success + resolve Failure の場合も Failure JSON を出す (spec
+// DR-053 §2 の failure に resolve 相失敗も含まれる意味論と整合)。
 //
 // 【PoC 仮置き — 統括が正本化する材料】
 //
@@ -48,7 +69,7 @@ pub fn cmd_parse(def_text : String, args : Array[String]) -> CmdResult {
     Err(@core.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
     Ok(ast) => {
       let outcome = @core.parse(ast, args)
-      let (obj, exit) = outcome_to_json(ast, outcome)
+      let (obj, exit) = outcome_to_json(ast, outcome, args)
       { json: obj.stringify(indent=2), exit }
     }
   }
@@ -134,46 +155,59 @@ pub fn cmd_validate(def_text : String) -> CmdResult {
 // ═════════════════════════════════════════════════════════════════════════════
 
 ///|
-/// Convert an `Outcome` into a (json_object, exit_code) pair.
-fn outcome_to_json(ast : @core.AtomicAST, o : @core.Outcome) -> (Json, Int) {
+/// Convert an `Outcome` into a (json_object, exit_code) pair. `po` は `front_door.parse` の返値
+/// (Success の binds は CLI 由来の生 binds、resolve 未適用)。Success の場合はさらに
+/// `front_door.resolve` を呼んで値源ラダーを充填した binds を得て、result / sources を組み立てる
+/// — 相区分の 2 段構成 (kuu.mbt MDR-005 §1)。resolve 相の失敗は Failure に転落させ、Failure
+/// JSON を出す。`args` は resolve が at_pos 計算 (DR-066 §4) に使う。
+fn outcome_to_json(
+  ast : @core.AtomicAST,
+  po : @core.Outcome,
+  args : Array[String],
+) -> (Json, Int) {
   let ekmap = @core.export_map(ast)
-  match o {
-    @core.Success(binds) => {
-      let effects = effects_to_json(ast.root, binds)
-      let result = result_to_json(ast.root, ekmap, binds)
-      let ws = @core.warnings_of(o)
-      let fields : Array[(String, Json)] = [
-        ("outcome", Json::string("success")),
-        ("effects", effects),
-        ("result", result),
-      ]
-      if ws.length() > 0 {
-        fields.push(("warnings", strs_to_json(ws)))
+  match po {
+    @core.Success(pbinds) => {
+      // parse 段の効果列は生 binds を素材にする (DR-045 §1 = cli fold の観測)。
+      let effects = effects_to_json(ast.root, pbinds)
+      // resolve 相を通して値源ラダー (env / config / inherit / default) を充填。env / config / tty
+      // は現状デフォルト (空) — CLI からの供給は今回スコープ外だが玄関 API としては受けられる。
+      let ro = @core.resolve(ast, po, args)
+      match ro {
+        @core.Success(rbinds) => {
+          let result = result_to_json(ast.root, ekmap, rbinds)
+          let ws = @core.warnings_structured(po)
+          let fields : Array[(String, Json)] = [
+            ("outcome", Json::string("success")),
+            ("effects", effects),
+            ("result", result),
+          ]
+          if ws.length() > 0 {
+            fields.push(("warnings", warnings_to_json(ws)))
+          }
+          (Json::object(Map::from_array(fields)), 0)
+        }
+        @core.Failure(d) => {
+          // 値源解決 (env/config seat parse や DR-009 §7 filter reject) で転落した場合は
+          // failure JSON を返す (spec DR-053 §2 の failure に resolve 相失敗も含まれる)。
+          // warnings は parse Outcome から取る (deprecated marker は parse 段の binds に載る)。
+          (failure_to_json(d, po), 1)
+        }
+        _ =>
+          // spec 上 `resolve` は Ambiguous をパススルーするだけで新規 Ambiguous 化することは
+          // ない (kuu.mbt MDR-005 §1)。到達不可の安全網。
+          (failure_to_json(
+            {
+              errors: [],
+              fired_action: None,
+              help_entry: None,
+              tried_triggers: [],
+            },
+            po,
+          ), 1)
       }
-      (Json::object(Map::from_array(fields)), 0)
     }
-    @core.Failure(d) => {
-      let fields : Array[(String, Json)] = [
-        ("outcome", Json::string("failure")),
-        ("errors", parse_errors_to_json(d.errors)),
-      ]
-      match d.fired_action {
-        Some(name) => fields.push(("fired_action", Json::string(name)))
-        None => ()
-      }
-      if d.tried_triggers.length() > 0 {
-        fields.push(("tried_triggers", strs_to_json(d.tried_triggers)))
-      }
-      match d.help_entry {
-        Some(h) => fields.push(("help_entry", Json::string(h)))
-        None => ()
-      }
-      let ws = @core.warnings_of(o)
-      if ws.length() > 0 {
-        fields.push(("warnings", strs_to_json(ws)))
-      }
-      (Json::object(Map::from_array(fields)), 1)
-    }
+    @core.Failure(d) => (failure_to_json(d, po), 1)
     @core.Ambiguous(d) => {
       // PoC 仮置き #2: interpretation の詳細は spec 未確定なので個数だけ pin する。
       let arr : Array[Json] = []
@@ -194,12 +228,59 @@ fn outcome_to_json(ast : @core.AtomicAST, o : @core.Outcome) -> (Json, Int) {
 }
 
 ///|
+/// Assemble the failure JSON (Failure outcome or resolve-layer failure). `po` は warnings 素材
+/// (deprecated marker は parse 段の binds に載る)。
+fn failure_to_json(d : @core.FailureData, po : @core.Outcome) -> Json {
+  let fields : Array[(String, Json)] = [
+    ("outcome", Json::string("failure")),
+    ("errors", parse_errors_to_json(d.errors)),
+  ]
+  match d.fired_action {
+    Some(name) => fields.push(("fired_action", Json::string(name)))
+    None => ()
+  }
+  if d.tried_triggers.length() > 0 {
+    fields.push(("tried_triggers", strs_to_json(d.tried_triggers)))
+  }
+  match d.help_entry {
+    Some(h) => fields.push(("help_entry", Json::string(h)))
+    None => ()
+  }
+  let ws = @core.warnings_structured(po)
+  if ws.length() > 0 {
+    fields.push(("warnings", warnings_to_json(ws)))
+  }
+  Json::object(Map::from_array(fields))
+}
+
+///|
+/// `warnings`: spec CONFORMANCE §2 が要求する `{element, kind}` の object 配列。素材は
+/// `@core.warnings_structured` (kuu.mbt eval.mbt、旧 `warnings_of` の element 配列を kind 情報
+/// つきに拡張したもの、codex M-1 解消)。
+fn warnings_to_json(ws : Array[@core.Warning]) -> Json {
+  let arr : Array[Json] = []
+  for w in ws {
+    arr.push(
+      Json::object({
+        "element": Json::string(w.element),
+        "kind": Json::string(w.kind),
+      }),
+    )
+  }
+  Json::array(arr)
+}
+
+///|
 /// `effects`: DR-045 §1 effect column. `config_file`, `TNone`, and `dd` cells are excluded
 /// (mirrors `proj_effects_ex` in json_conformance_wbtest.mbt).
 fn effects_to_json(sc : @core.Scope, binds : Array[@core.Binding]) -> Json {
   let arr : Array[Json] = []
   for b in binds {
-    if is_sentinel_key(b.key) {
+    // sentinel (`[]` / `{}` / "" / `#row` / `#fire` / `@act:...` / `@depr:...`) は effects の
+    // 素材ではない (kuu.mbt resolve.mbt の `is_sentinel`、pub 化済み — issue
+    // front-door-parse-missing-postprocessing、codex M-1 の `@depr:port` が effects に漏れる
+    // バグの根治)。旧 `is_sentinel_key` (`[]` / `{}` / `""` のみ) は狭すぎた。
+    if @core.is_sentinel(b.key) {
       continue
     }
     if is_excluded_cell(sc, b.key) {
@@ -442,13 +523,6 @@ fn term_str(t : @core.TermHint) -> String {
 // ═════════════════════════════════════════════════════════════════════════════
 // SECTION 5 — helpers
 // ═════════════════════════════════════════════════════════════════════════════
-
-///|
-/// Sentinel binding keys used by resolve/build_result internally — not real effects, must be
-/// filtered from the CLI output. Mirrors `is_sentinel` in json_conformance_wbtest.mbt.
-fn is_sentinel_key(k : String) -> Bool {
-  k == "[]" || k == "{}" || k == ""
-}
 
 ///|
 /// True when the entity of key `k` in scope `sc` has a config_file, TNone, or dd role — such
