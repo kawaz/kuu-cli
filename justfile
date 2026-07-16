@@ -35,6 +35,10 @@ impl-mbt-lint:
 impl-mbt-test:
     cd impl/mbt && just test
 
+# conformance sweep (情報収集モード — green gate ではない。詳細は impl/mbt/justfile の conformance)
+impl-mbt-conformance:
+    cd impl/mbt && just conformance
+
 # ---------- push flow (bump-semver canonical 模倣) ----------
 
 # working copy is clean (= 未コミット変更を巻き込ませない)

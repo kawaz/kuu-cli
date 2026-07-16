@@ -13,7 +13,10 @@ MBT_ROOT := justfile_directory()
 #   ../../..  = .../kawaz/kuu-cli
 #   ../../../.. = .../kawaz  (sibling repos live here)
 KUU_MBT_ROOT := justfile_directory() + "/../../../../kuu.mbt/main"
-KUU_SPEC_ROOT := justfile_directory() + "/../../../../kuu/main"
+# spec fixtures は KUU_FIXTURES 環境変数で注入可能 (kuu.mbt の conformance runner と同じ流儀)。
+# 未設定なら sibling checkout の fixtures/ (dev 環境デフォルト)。CI は SHA-pin checkout の
+# パスを KUU_FIXTURES で渡す。
+FIXTURES := env("KUU_FIXTURES", justfile_directory() + "/../../../../kuu/main/fixtures")
 
 default: lint test
 
@@ -141,9 +144,11 @@ e2e:
     }
 
     # ── case 1: multiple-parse/separator-typed :: option-separator-number-success ──
+    # (conformance sweep が全 parse fixture を走査するのに対し、ここは push gate に入る green 必須の
+    # 代表 pin。sweep は情報収集モードで gate ではない — 役割が違うので両方持つ)
     # separator + type parse: fixture の args ["--ports","5,7"] を読み、期待の result.ports が実バイナリの
     # 出力と一致することを pin。
-    fixture="{{KUU_SPEC_ROOT}}/fixtures/multiple-parse/separator-typed.json"
+    fixture="{{FIXTURES}}/multiple-parse/separator-typed.json"
     id="option-separator-number-success"
     jq '.definition' "$fixture" > "$def_only"
     mapfile -t args < <(read_case_args "$fixture" "$id")
@@ -155,7 +160,7 @@ e2e:
     # ── case 2: export-key/rename :: rename-projection ──
     # export_key: "alias" が result キーを rename し、effects の entity は cell name のまま
     # (front_door export_map(ast) 経路の実機確認)。
-    fixture="{{KUU_SPEC_ROOT}}/fixtures/export-key/rename.json"
+    fixture="{{FIXTURES}}/export-key/rename.json"
     id="rename-projection"
     jq '.definition' "$fixture" > "$def_only"
     mapfile -t args < <(read_case_args "$fixture" "$id")
@@ -174,7 +179,7 @@ e2e:
     # 通ってしまう構造 (codex #1 の C-1 発見の原因) が再発しないことを確認する。fixture 期待の
     # interpretations 個数と CLI 出力の interpretations 配列長を比較 (JSON 形の詳細は wire.mbt の
     # 「PoC 仮置き #1」で未確定なので長さで pin)。
-    fixture="{{KUU_SPEC_ROOT}}/fixtures/export-key/collision.json"
+    fixture="{{FIXTURES}}/export-key/collision.json"
     id="co-exposure-collision"
     jq '.definition' "$fixture" > "$def_only"
     mapfile -t args < <(read_case_args "$fixture" "$id")
@@ -195,7 +200,7 @@ e2e:
     # C-1 の再発検知軸: 玄関 `parse` だけ呼んで `resolve` を呼び忘れると result.sub が空になる
     # (旧 wire.mbt が実際にこのバグを持っていた)。fixture 期待の result.sub.ttl (=30) が実バイナリの
     # 出力と一致することで、resolve 相の起動と inherit の流下を同時に確認する。
-    fixture="{{KUU_SPEC_ROOT}}/fixtures/inheritable-parse/basic.json"
+    fixture="{{FIXTURES}}/inheritable-parse/basic.json"
     id="ancestor-inherit-flowdown"
     jq '.definition' "$fixture" > "$def_only"
     mapfile -t args < <(read_case_args "$fixture" "$id")
@@ -209,7 +214,7 @@ e2e:
     # spec CONFORMANCE §2 の warnings 面 (`[{element, kind}]`) と、@depr sentinel が effects に
     # 漏れないこと (kuu.mbt `is_sentinel` pub 化 + kuu-cli 側の切替え) を CLI 経由で pin。M-1 の再発
     # 検知軸: sentinel 判定が狭いままだと @depr:port が effects[] に紛れ込んで検出可能。
-    fixture="{{KUU_SPEC_ROOT}}/fixtures/alias-parse/deprecated.json"
+    fixture="{{FIXTURES}}/alias-parse/deprecated.json"
     id="deprecated-entry-warns"
     jq '.definition' "$fixture" > "$def_only"
     mapfile -t args < <(read_case_args "$fixture" "$id")
@@ -220,3 +225,71 @@ e2e:
     depr_leak=$(jq -r '[.effects[]?.entity | select(startswith("@depr:"))] | length' <<<"$out")
     assert_eq "$id @depr sentinel leak" "$depr_leak" "0"
     printf "e2e OK: deprecated.json %s -> success, warnings=%s, no @depr in effects\n" "$id" "$(jq -c '.warnings' <<<"$out")"
+
+# ---------- conformance sweep (情報収集モード) ----------
+
+# 全 parse fixture を CLI 経由で走らせ、expect との field 単位一致を集計する骨格。
+#
+# **green gate ではない** (v1 決定リスト 8 = conformance gate 化は envelope 裁定 (UX-Q) 後の
+# 別タスク、統括指示 2026-07-16)。未実装機能で落ちる case を含めて pass/fail/skip を集計し、
+# 「現在何割通るか」を可視化する情報収集モード。exit code は常に 0 (集計の印字が成果物)。
+#
+# 比較は e2e 5 case と同じ field 単位の厳密一致 (outcome + expect の各 top-level key)。
+# CONFORMANCE.md §3 の緩比較の完全実装はスコープ外 (同上の別タスク)。
+#
+# skip 対象: query が parse 以外の fixture (complete / definition_error は envelope 未確定領域)。
+[script]
+conformance:
+    cd "{{MBT_ROOT}}" && moon build --target native
+    bin="{{MBT_ROOT}}/_build/native/debug/build/kawaz/kuu-cli-mbt/main/main.exe"
+    if [[ ! -x "$bin" ]]; then
+      printf >&2 "conformance: main binary not found at %s\n" "$bin"
+      exit 2
+    fi
+    fixtures_root="{{FIXTURES}}"
+    if [[ ! -d "$fixtures_root" ]]; then
+      printf >&2 "conformance: fixtures dir not found at %s (set KUU_FIXTURES or check out kawaz/kuu as sibling)\n" "$fixtures_root"
+      exit 2
+    fi
+    def_only=$(mktemp); fail_log=$(mktemp)
+    trap 'rm -f "$def_only" "$fail_log"' EXIT
+    pass=0; fail=0; skip=0
+    for fx in "$fixtures_root"/*/*.json; do
+      rel="${fx#"$fixtures_root"/}"
+      query=$(jq -r '.query // "parse"' "$fx")
+      n_cases=$(jq -r '.cases | length' "$fx")
+      if [[ "$query" != "parse" ]]; then
+        skip=$((skip + n_cases))
+        continue
+      fi
+      jq '.definition' "$fx" > "$def_only"
+      for i in $(seq 0 $((n_cases - 1))); do
+        id=$(jq -r --argjson i "$i" '.cases[$i].id' "$fx")
+        mapfile -t args < <(jq -r --argjson i "$i" '.cases[$i].args[]' "$fx")
+        # 出力比較なので exit code は見ない (failure/ambiguous も JSON は stdout に出る)
+        set +e
+        out=$("$bin" parse "$def_only" -- "${args[@]}" 2>/dev/null)
+        set -e
+        if ! jq -e . <<<"$out" >/dev/null 2>&1; then
+          fail=$((fail + 1))
+          printf "FAIL %s :: %s (no JSON output)\n" "$rel" "$id" >> "$fail_log"
+          continue
+        fi
+        case_ok=1
+        for key in $(jq -r --argjson i "$i" '.cases[$i].expect | keys[]' "$fx"); do
+          want=$(jq -c --argjson i "$i" ".cases[\$i].expect.\"$key\"" "$fx")
+          got=$(jq -c ".\"$key\"" <<<"$out")
+          if [[ "$got" != "$want" ]]; then
+            case_ok=0
+            printf "FAIL %s :: %s (.%s: got=%s want=%s)\n" "$rel" "$id" "$key" "$got" "$want" >> "$fail_log"
+            break
+          fi
+        done
+        if [[ "$case_ok" == 1 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
+      done
+    done
+    total=$((pass + fail))
+    echo "──── conformance sweep (parse fixtures, informational) ────"
+    if [[ -s "$fail_log" ]]; then cat "$fail_log"; fi
+    printf "conformance: %d/%d parse cases pass (%d fail), %d skipped (query != parse)\n" \
+      "$pass" "$total" "$fail" "$skip"

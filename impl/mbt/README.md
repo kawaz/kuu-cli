@@ -47,6 +47,14 @@ The `e2e` recipe runs the compiled `kuu parse` binary against **five representat
 
 Reproducing the full CONFORMANCE-style comparison across every fixture is out of scope here (see v1 決定リスト item 8) — this layer only checks that the compiled binary agrees with each fixture's representative expected fields.
 
+### Conformance sweep (informational, not a gate)
+
+```sh
+just impl-mbt-conformance   # run ALL parse fixtures through the CLI, print pass/fail/skip tally
+```
+
+Runs every `query: "parse"` fixture case through the compiled binary and compares each `expect` top-level key by strict equality, printing a `pass/fail/skip` tally (skip = `complete` / `definition_error` fixtures, whose envelope is undecided). This is an **information-collection mode**: it always exits 0 and is NOT wired into the push gate — many failures are expected until the v1 envelope is ratified and the CONFORMANCE §3 loose comparison is implemented (v1 決定リスト item 8). Fixture location can be injected with `KUU_FIXTURES` (same convention as the kuu.mbt conformance runner); the default is the sibling `kawaz/kuu` checkout.
+
 ## CLI reference
 
 ```sh

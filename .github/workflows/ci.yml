@@ -1,0 +1,60 @@
+# impl/mbt の lint + test + e2e を回す CI (DR-0001 §Consequences のロックステップパターン)。
+#
+# 依存 2 リポは SHA-pin checkout (追従は pin bump の commit で明示化する):
+#   - kawaz/kuu.mbt → impl/mbt/deps/kuu.mbt (moon.work member。setup が real directory を受理する)
+#   - kawaz/kuu (spec) → _kuu-spec (fixtures を KUU_FIXTURES で e2e / conformance に注入)
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  impl-mbt:
+    name: impl/mbt (lint + test + e2e)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Checkout kuu.mbt (SHA-pinned, moon.work member)
+        uses: actions/checkout@v7
+        with:
+          repository: kawaz/kuu.mbt
+          ref: 8364b9817318a4ae0944974cf2b2fccba1a6572f
+          path: impl/mbt/deps/kuu.mbt
+
+      - name: Checkout kuu spec fixtures (SHA-pinned)
+        uses: actions/checkout@v7
+        with:
+          repository: kawaz/kuu
+          ref: 07699749adbeefa5c6ca71e46a3aae94a4c5307b
+          path: _kuu-spec
+
+      # 公式 install script で rolling nightly を直取得 (moonup の nightly index は
+      # 1 日遅延することがあり、toolchain 移行日にローカルと CI で版が割れるため。
+      # kuu.mbt の ci.yml と同方式)
+      - name: Install MoonBit (nightly)
+        run: |
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s nightly
+          echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
+      - run: moon version --all
+      - run: moon update
+
+      - uses: extractions/setup-just@v3
+
+      - name: Lint
+        run: just impl-mbt-lint
+
+      - name: Test + e2e
+        env:
+          KUU_FIXTURES: ${{ github.workspace }}/_kuu-spec/fixtures
+        run: just impl-mbt-test
+
+      # conformance harness (情報収集モード — green gate ではない。集計をログに出すだけで
+      # 失敗しても job は落とさない)
+      - name: Conformance sweep (informational)
+        env:
+          KUU_FIXTURES: ${{ github.workspace }}/_kuu-spec/fixtures
+        run: just impl-mbt-conformance || true
