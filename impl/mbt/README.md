@@ -15,7 +15,7 @@ impl/mbt/
       main/main.mbt        argv dispatch + libc exit(3) binding
   deps/
     kuu.mbt              symlink to sibling kawaz/kuu.mbt/main (gitignored)
-  justfile             setup / lint / test / e2e
+  justfile             setup / lint / test / e2e / conformance
 ```
 
 ## Dev setup
@@ -47,13 +47,13 @@ The `e2e` recipe runs the compiled `kuu parse` binary against **five representat
 
 Reproducing the full CONFORMANCE-style comparison across every fixture is out of scope here (see v1 決定リスト item 8) — this layer only checks that the compiled binary agrees with each fixture's representative expected fields.
 
-### Conformance sweep (informational, not a gate)
+### Conformance sweep (regression gate)
 
 ```sh
-just impl-mbt-conformance   # run ALL parse fixtures through the CLI, print pass/fail/skip tally
+just impl-mbt-conformance   # run ALL parse fixtures through the CLI; regression gate on the pass count
 ```
 
-Runs every `query: "parse"` fixture case through the compiled binary and compares each `expect` top-level key by strict equality, printing a `pass/fail/skip` tally (skip = `complete` / `definition_error` fixtures, whose envelope is undecided). This is an **information-collection mode**: it always exits 0 and is NOT wired into the push gate — many failures are expected until the v1 envelope is ratified and the CONFORMANCE §3 loose comparison is implemented (v1 決定リスト item 8). Fixture location can be injected with `KUU_FIXTURES` (same convention as the kuu.mbt conformance runner); the default is the sibling `kawaz/kuu` checkout.
+Runs every `query: "parse"` fixture case through the compiled binary (fixing the environment via `--no-env` and injecting the case's `env` / `config` / `tty` inputs) and compares each `expect` top-level key per CONFORMANCE §3 (structural equality; `errors` / `interpretations` / `warnings` / `tried_triggers` as sets; `reason` / `path` opt-in; numbers by value). It is a **regression gate**: passing counts below the hand-maintained baseline (see the recipe) exit 1. The baseline is a manual ratchet — raise it when fails are resolved; it is never auto-tracked (that would hide new regressions). Remaining fails/blocked-skips are catalogued in `docs/findings/2026-07-16-conformance-fail-taxonomy.md`. Fixture location can be injected with `KUU_FIXTURES` (same convention as the kuu.mbt conformance runner); the default is the sibling `kawaz/kuu` checkout.
 
 ## CLI reference
 
@@ -72,4 +72,4 @@ kuu validate <def.json>
 ## Known issues
 
 - `moon fmt --check` fails: the formatter (`moon` 0.1.20260709) rewrites `options("is-main": true)` → `pkgtype(kind: "executable")`, but the compiler in the same toolchain does not accept `pkgtype`. `just lint` therefore only runs `moon check`. To be resolved when a toolchain aligns the two.
-- The two remaining "PoC 仮置き" items (ambiguous `interpretations` reduced to a count-only shape; PoC exit-code assignment 0/1/2) are documented in the file-level comment of `cli/src/lib/wire.mbt`. The former "result export_key application" note is resolved (kuu.mbt MDR-005 §1 追記 with `export_map(ast)` on `AtomicAST`, 2026-07-15).
+- The remaining "PoC 仮置き" item (PoC exit-code assignment 0/1/2) is documented in the file-level comment of `cli/src/lib/wire.mbt`.

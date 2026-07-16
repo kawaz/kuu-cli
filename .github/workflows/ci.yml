@@ -52,9 +52,9 @@ jobs:
           KUU_FIXTURES: ${{ github.workspace }}/_kuu-spec/fixtures
         run: just impl-mbt-test
 
-      # conformance harness (情報収集モード — green gate ではない。集計をログに出すだけで
-      # 失敗しても job は落とさない)
-      - name: Conformance sweep (informational)
+      # conformance sweep — 回帰 gate (統括裁定 2026-07-16 r27m18): pass 数が baseline
+      # (impl/mbt/justfile の conformance recipe 末尾) を割ったら red。baseline は手動 ratchet
+      - name: Conformance sweep (regression gate)
         env:
           KUU_FIXTURES: ${{ github.workspace }}/_kuu-spec/fixtures
-        run: just impl-mbt-conformance || true
+        run: just impl-mbt-conformance

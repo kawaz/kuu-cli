@@ -230,9 +230,9 @@ e2e:
 
 # 全 parse fixture を CLI 経由で走らせ、expect との field 単位一致を集計する骨格。
 #
-# **green gate ではない** (v1 決定リスト 8 = conformance gate 化は envelope 裁定 (UX-Q) 後の
-# 別タスク、統括指示 2026-07-16)。未実装機能で落ちる case を含めて pass/fail/skip を集計し、
-# 「現在何割通るか」を可視化する情報収集モード。exit code は常に 0 (集計の印字が成果物)。
+# **回帰 gate** (統括裁定 2026-07-16 r27m18): pass 数が baseline (recipe 末尾) を割ったら
+# exit 1 で red。全 pass gate ではない — 残 fail は裁定待ち or kuu.mbt 管轄の調査中で、
+# baseline は fail 解消に合わせて手動で上げる ratchet 運用。
 #
 # 比較は e2e 5 case と同じ field 単位の厳密一致 (outcome + expect の各 top-level key)。
 # CONFORMANCE.md §3 の緩比較の完全実装はスコープ外 (同上の別タスク)。
@@ -368,3 +368,12 @@ conformance:
     rm -f /tmp/confdirs.$$
     printf "conformance: %d/%d parse cases pass (%d fail), %d blocked-skip (config_files/Infinity), %d skipped (query != parse)\n" \
       "$pass" "$total" "$fail" "$blocked" "$skip"
+    # 回帰 gate (統括裁定 r27m18-1): pass 数が baseline を割ったら red。baseline は fail の
+    # 解消に合わせて**手動**で上げる (自動追従は ratchet の逆回転 = 新規 fail を隠すので不可)。
+    # 現 baseline の根拠: DR-109 envelope 追随後の 533 (2026-07-16、残 fail 23 は全て裁定待ち
+    # or kuu.mbt 管轄調査中 — docs/findings/2026-07-16-conformance-fail-taxonomy.md)。
+    baseline=533
+    if [[ "$pass" -lt "$baseline" ]]; then
+      printf >&2 "conformance REGRESSION: pass=%d fell below baseline=%d\n" "$pass" "$baseline"
+      exit 1
+    fi
