@@ -20,7 +20,7 @@ This repository hosts implementations in multiple languages under `impl/`, all c
 
 | impl | status | notes |
 |---|---|---|
-| [`impl/mbt`](./impl/mbt/) (MoonBit) | PoC (parse / complete / validate wired to spec fixtures) | reuses [kawaz/kuu.mbt](https://github.com/kawaz/kuu.mbt), the spec's reference implementation |
+| [`impl/mbt`](./impl/mbt/) (MoonBit) | PoC — `parse` / `complete` / `validate` subcommands; e2e pins 5 representative spec fixture cases directly (see [`impl/mbt/README.md`](./impl/mbt/README.md)) | reuses [kawaz/kuu.mbt](https://github.com/kawaz/kuu.mbt), the spec's reference implementation |
 
 ## Status
 

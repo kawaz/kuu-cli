@@ -72,13 +72,25 @@ test: setup
     cd "{{MBT_ROOT}}" && moon test cli/src/lib --target native
     cd "{{MBT_ROOT}}" && just e2e
 
-# CLI レベル e2e: kuu/fixtures から複数本選び、compiled binary が JSON を返すことを確認。
-# spec fixture との厳密比較は conformance runner (kuu.mbt 側) の関心で、ここでは
-# 「compiled binary が動く / JSON が壊れずに出る / expect の代表値が乗る」の 3 点を pin する。
-# 現在の pin 対象:
-#   - multiple-parse/separator-typed.json (separator + type parse の輪郭)
-#   - export-key/rename.json              (export_key 適用: result key rename、front_door
-#                                          export_map(ast) 経路の実機確認)
+# CLI レベル e2e: kuu/fixtures の代表 case を fixture 本体から case id 経由で消費し、compiled
+# binary の出力が fixture expect の代表 field と一致することを pin する。
+#
+# **fixture 審判化** (codex #1 M-2 修正、統括裁定 2026-07-16): 旧実装は fixture の `.definition`
+# だけ読んで args と期待値を justfile 側に hardcode していた — fixture case が改名 / 削除 / 意味
+# 変更されても hardcode が古い期待値と一致すれば silent pass する構造で、実際 codex レビュー時に
+# C-1 (front_door 後段処理欠落) を見逃す原因になった。新実装は `.cases[] | select(.id==$id)` で
+# **args も expected も fixture 本体から jq で読む** ため、fixture 側の変更は必ず e2e に反映される。
+#
+# 現在の pin 対象 (5 case、代表軸を網羅):
+#   - multiple-parse/separator-typed :: option-separator-number-success   (separator + type parse)
+#   - export-key/rename              :: rename-projection                 (export_key: result rename)
+#   - export-key/collision           :: co-exposure-collision             (Ambiguous 昇格 = C-1 の再発検知軸)
+#   - inheritable-parse/basic        :: ancestor-inherit-flowdown         (resolve 相の inherit 流下 = C-1 の再発検知軸)
+#   - alias-parse/deprecated         :: deprecated-entry-warns            (構造化 warnings + sentinel 除外 = M-1 の再発検知軸)
+#
+# **spec fixture の緩比較全体 (CONFORMANCE.md §3) を再現するのはスコープ外** (v1 決定リスト 8、
+# 全 fixture 走査の conformance gate 化は別サイクル、統括裁定)。ここでは fixture 側の args / 期待
+# 代表 field を「そのまま」読んで pin する層に留める。
 [script]
 e2e:
     # binary path 固定 (codex #1 m-1 修正、統括裁定 2026-07-16): `moon build --target native`
@@ -95,54 +107,116 @@ e2e:
     def_only=$(mktemp)
     trap 'rm -f "$def_only"' EXIT
 
-    # ── case 1: multiple-parse/separator-typed.json :: option-separator-number-success ──
-    fixture="{{KUU_SPEC_ROOT}}/fixtures/multiple-parse/separator-typed.json"
-    if [[ ! -f "$fixture" ]]; then
-      printf >&2 "e2e: fixture not found at %s (kawaz/kuu checkout missing?)\n" "$fixture"
-      exit 2
-    fi
-    jq '.definition' "$fixture" > "$def_only"
-    out=$("$bin" parse "$def_only" -- --ports 5,7)
-    outcome=$(echo "$out" | jq -r '.outcome')
-    ports=$(echo "$out" | jq -c '.result.ports')
-    if [[ "$outcome" != "success" ]]; then
-      printf >&2 "e2e FAIL (separator-typed): expected outcome=success, got %s\n" "$outcome"
-      echo >&2 "$out"
-      exit 1
-    fi
-    if [[ "$ports" != "[5,7]" ]]; then
-      printf >&2 "e2e FAIL (separator-typed): expected result.ports=[5,7], got %s\n" "$ports"
-      echo >&2 "$out"
-      exit 1
-    fi
-    printf "e2e OK: separator-typed.json option-separator-number-success -> success, ports=[5,7]\n"
+    # fixture の case を id で引いて (args, expect) を返すための shell function。
+    #   read_case_args   <fixture_path> <case_id>  → args 配列 (改行区切り、bash mapfile 用)
+    #   read_case_expect <fixture_path> <case_id> <jq_path> → expect のうち jq_path で射影した文字列
+    # fixture / case が見つからない・args 配列でない場合は診断して exit 1。
+    read_case_args() {
+      local fx="$1" id="$2"
+      if [[ ! -f "$fx" ]]; then
+        printf >&2 "e2e: fixture not found at %s (kawaz/kuu checkout missing?)\n" "$fx"
+        exit 2
+      fi
+      local args_json
+      args_json=$(jq -r --arg id "$id" '(.cases[] | select(.id==$id) | .args) // empty' "$fx")
+      if [[ -z "$args_json" ]]; then
+        printf >&2 "e2e: case id '%s' not found in %s\n" "$id" "$fx"
+        exit 1
+      fi
+      # `.args | .[]` で行分割: bash mapfile が食える形にする (string 内の改行は fixture が排除)
+      jq -r --arg id "$id" '.cases[] | select(.id==$id) | .args[]' "$fx"
+    }
+    read_case_expect() {
+      local fx="$1" id="$2" path="$3"
+      jq -c --arg id "$id" ".cases[] | select(.id==\$id) | .expect | $path" "$fx"
+    }
+    # (fixture, case_id, args, expect の代表 field) を対で pin する共通関数。
+    #   assert_eq  <label> <got> <want>
+    assert_eq() {
+      local label="$1" got="$2" want="$3"
+      if [[ "$got" != "$want" ]]; then
+        printf >&2 "e2e FAIL (%s): got=%s want=%s\n" "$label" "$got" "$want"
+        exit 1
+      fi
+    }
 
-    # ── case 2: export-key/rename.json :: rename-projection ──
-    # export_key: "alias" が result キーを rename し、effects の entity は cell name のまま
-    # (front_door export_map(ast) 経由の ekmap が実機で効いていることを CLI 層で pin する)。
-    fixture="{{KUU_SPEC_ROOT}}/fixtures/export-key/rename.json"
-    if [[ ! -f "$fixture" ]]; then
-      printf >&2 "e2e: fixture not found at %s\n" "$fixture"
-      exit 2
-    fi
+    # ── case 1: multiple-parse/separator-typed :: option-separator-number-success ──
+    # separator + type parse: fixture の args ["--ports","5,7"] を読み、期待の result.ports が実バイナリの
+    # 出力と一致することを pin。
+    fixture="{{KUU_SPEC_ROOT}}/fixtures/multiple-parse/separator-typed.json"
+    id="option-separator-number-success"
     jq '.definition' "$fixture" > "$def_only"
-    out=$("$bin" parse "$def_only" -- --port 80)
-    outcome=$(echo "$out" | jq -r '.outcome')
-    result=$(echo "$out" | jq -c '.result')
-    ent=$(echo "$out" | jq -r '.effects[0].entity')
-    if [[ "$outcome" != "success" ]]; then
-      printf >&2 "e2e FAIL (rename): expected outcome=success, got %s\n" "$outcome"
-      echo >&2 "$out"
-      exit 1
-    fi
-    if [[ "$result" != '{"alias":80}' ]]; then
-      printf >&2 "e2e FAIL (rename): expected result={\"alias\":80}, got %s\n" "$result"
-      echo >&2 "$out"
-      exit 1
-    fi
-    if [[ "$ent" != "port" ]]; then
-      printf >&2 "e2e FAIL (rename): expected effects[0].entity=port (cell name), got %s\n" "$ent"
-      echo >&2 "$out"
-      exit 1
-    fi
-    printf "e2e OK: rename.json rename-projection -> success, result={alias:80}, entity=port\n"
+    mapfile -t args < <(read_case_args "$fixture" "$id")
+    out=$("$bin" parse "$def_only" -- "${args[@]}")
+    assert_eq "$id outcome"     "$(jq -r '.outcome'    <<<"$out")" "success"
+    assert_eq "$id result.ports" "$(jq -c '.result.ports' <<<"$out")" "$(read_case_expect "$fixture" "$id" '.result.ports')"
+    printf "e2e OK: separator-typed.json %s -> success, ports=%s\n" "$id" "$(jq -c '.result.ports' <<<"$out")"
+
+    # ── case 2: export-key/rename :: rename-projection ──
+    # export_key: "alias" が result キーを rename し、effects の entity は cell name のまま
+    # (front_door export_map(ast) 経路の実機確認)。
+    fixture="{{KUU_SPEC_ROOT}}/fixtures/export-key/rename.json"
+    id="rename-projection"
+    jq '.definition' "$fixture" > "$def_only"
+    mapfile -t args < <(read_case_args "$fixture" "$id")
+    out=$("$bin" parse "$def_only" -- "${args[@]}")
+    assert_eq "$id outcome" "$(jq -r '.outcome' <<<"$out")" "success"
+    assert_eq "$id result"  "$(jq -c '.result'  <<<"$out")" "$(read_case_expect "$fixture" "$id" '.result')"
+    # effects の第 1 要素の entity は fixture expected の 1 番目と一致 (kv 順序は spec 上安定)
+    assert_eq "$id effects[0].entity" \
+              "$(jq -r '.effects[0].entity' <<<"$out")" \
+              "$(jq -r --arg id "$id" '.cases[] | select(.id==$id) | .expect.effects[0].entity' "$fixture")"
+    printf "e2e OK: rename.json %s -> success, result=%s, entity=port\n" "$id" "$(jq -c '.result' <<<"$out")"
+
+    # ── case 3: export-key/collision :: co-exposure-collision (Ambiguous 昇格) ──
+    # front_door.parse が spec DR-021 → DR-073 の export-key 共露出昇格を含むかを CLI 経由で pin。
+    # C-1 の再発検知軸: 玄関 API が薄い parse_tree wrapper に退化すると Success を返して e2e が silently
+    # 通ってしまう構造 (codex #1 の C-1 発見の原因) が再発しないことを確認する。fixture 期待の
+    # interpretations 個数と CLI 出力の interpretations 配列長を比較 (JSON 形の詳細は wire.mbt の
+    # 「PoC 仮置き #1」で未確定なので長さで pin)。
+    fixture="{{KUU_SPEC_ROOT}}/fixtures/export-key/collision.json"
+    id="co-exposure-collision"
+    jq '.definition' "$fixture" > "$def_only"
+    mapfile -t args < <(read_case_args "$fixture" "$id")
+    # ambiguous は wire exit code 1 だが e2e は成功扱いにするため subshell + $? を素直に取る
+    set +e
+    out=$("$bin" parse "$def_only" -- "${args[@]}")
+    ec=$?
+    set -e
+    assert_eq "$id outcome" "$(jq -r '.outcome' <<<"$out")" "ambiguous"
+    assert_eq "$id exit"    "$ec" "1"
+    got_len=$(jq -r '.interpretations | length' <<<"$out")
+    want_len=$(jq -r --arg id "$id" '.cases[] | select(.id==$id) | .expect.interpretations | length' "$fixture")
+    assert_eq "$id interpretations.length" "$got_len" "$want_len"
+    printf "e2e OK: collision.json %s -> ambiguous, interpretations.length=%s\n" "$id" "$got_len"
+
+    # ── case 4: inheritable-parse/basic :: ancestor-inherit-flowdown (resolve 相の inherit 流下) ──
+    # front_door.resolve が値源ラダーの inherit 席を子 scope まで流下させるかを CLI 経由で pin。
+    # C-1 の再発検知軸: 玄関 `parse` だけ呼んで `resolve` を呼び忘れると result.sub が空になる
+    # (旧 wire.mbt が実際にこのバグを持っていた)。fixture 期待の result.sub.ttl (=30) が実バイナリの
+    # 出力と一致することで、resolve 相の起動と inherit の流下を同時に確認する。
+    fixture="{{KUU_SPEC_ROOT}}/fixtures/inheritable-parse/basic.json"
+    id="ancestor-inherit-flowdown"
+    jq '.definition' "$fixture" > "$def_only"
+    mapfile -t args < <(read_case_args "$fixture" "$id")
+    out=$("$bin" parse "$def_only" -- "${args[@]}")
+    assert_eq "$id outcome"        "$(jq -r '.outcome'         <<<"$out")" "success"
+    assert_eq "$id result.sub.ttl" "$(jq -c '.result.sub.ttl'  <<<"$out")" "$(read_case_expect "$fixture" "$id" '.result.sub.ttl')"
+    assert_eq "$id result.ttl"     "$(jq -c '.result.ttl'      <<<"$out")" "$(read_case_expect "$fixture" "$id" '.result.ttl')"
+    printf "e2e OK: inheritable basic.json %s -> success, result=%s\n" "$id" "$(jq -c '.result' <<<"$out")"
+
+    # ── case 5: alias-parse/deprecated :: deprecated-entry-warns (構造化 warnings + sentinel 除外) ──
+    # spec CONFORMANCE §2 の warnings 面 (`[{element, kind}]`) と、@depr sentinel が effects に
+    # 漏れないこと (kuu.mbt `is_sentinel` pub 化 + kuu-cli 側の切替え) を CLI 経由で pin。M-1 の再発
+    # 検知軸: sentinel 判定が狭いままだと @depr:port が effects[] に紛れ込んで検出可能。
+    fixture="{{KUU_SPEC_ROOT}}/fixtures/alias-parse/deprecated.json"
+    id="deprecated-entry-warns"
+    jq '.definition' "$fixture" > "$def_only"
+    mapfile -t args < <(read_case_args "$fixture" "$id")
+    out=$("$bin" parse "$def_only" -- "${args[@]}")
+    assert_eq "$id outcome"  "$(jq -r '.outcome' <<<"$out")" "success"
+    assert_eq "$id warnings" "$(jq -c '.warnings' <<<"$out")" "$(read_case_expect "$fixture" "$id" '.warnings')"
+    # @depr: sentinel が effects に混じらない (M-1 の再発検知)。
+    depr_leak=$(jq -r '[.effects[]?.entity | select(startswith("@depr:"))] | length' <<<"$out")
+    assert_eq "$id @depr sentinel leak" "$depr_leak" "0"
+    printf "e2e OK: deprecated.json %s -> success, warnings=%s, no @depr in effects\n" "$id" "$(jq -c '.warnings' <<<"$out")"

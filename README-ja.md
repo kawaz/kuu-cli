@@ -20,7 +20,7 @@ kuu の definition は言語非依存。スタンドアロンの `kuu` バイナ
 
 | impl | status | notes |
 |---|---|---|
-| `impl/mbt` (MoonBit) | PoC | spec の参照実装 [kawaz/kuu.mbt](https://github.com/kawaz/kuu.mbt) を流用 |
+| [`impl/mbt`](./impl/mbt/) (MoonBit) | PoC — `parse` / `complete` / `validate` サブコマンド、e2e で spec fixture の代表 5 case を fixture 本体から直接読み込んで pin (詳細 [`impl/mbt/README.md`](./impl/mbt/README.md)) | spec の参照実装 [kawaz/kuu.mbt](https://github.com/kawaz/kuu.mbt) を流用 |
 
 ## Status
 

@@ -31,11 +31,21 @@ This creates `deps/kuu.mbt -> ../../../../../kuu.mbt/main`. The symlink is gitig
 ## Build / test / e2e
 
 ```sh
-just impl-mbt-test        # moon test cli/src/lib + CLI e2e against a real spec fixture
+just impl-mbt-test        # moon test cli/src/lib + CLI e2e against real spec fixtures
 just impl-mbt-lint        # moon check --target native
 ```
 
-The `e2e` recipe invokes the compiled `kuu parse` binary against `kawaz/kuu/fixtures/multiple-parse/separator-typed.json` and checks the outcome + result shape (spec fixtures are the arbiter).
+The `e2e` recipe runs the compiled `kuu parse` binary against **five representative cases** picked from `kawaz/kuu/fixtures/`, reading each case's `args` and `expect` fields **directly from the fixture body via `jq`** (so a fixture rename or expected-value change is caught immediately, not masked by a hardcoded copy — cf. codex review #1 M-2). Current pin set:
+
+| fixture | case id | axis |
+|---|---|---|
+| `multiple-parse/separator-typed.json` | `option-separator-number-success` | separator + type parse |
+| `export-key/rename.json` | `rename-projection` | `export_key`: result-key rename |
+| `export-key/collision.json` | `co-exposure-collision` | Ambiguous 昇格 (regression guard for C-1 = `front_door.parse` postprocessing) |
+| `inheritable-parse/basic.json` | `ancestor-inherit-flowdown` | resolve 相の inherit 流下 (regression guard for C-1) |
+| `alias-parse/deprecated.json` | `deprecated-entry-warns` | structured `warnings` + `@depr` sentinel not leaking into `effects` (regression guard for M-1) |
+
+Reproducing the full CONFORMANCE-style comparison across every fixture is out of scope here (see v1 決定リスト item 8) — this layer only checks that the compiled binary agrees with each fixture's representative expected fields.
 
 ## CLI reference
 
