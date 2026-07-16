@@ -62,7 +62,11 @@ promote:
     bump-semver vcs promote
 
 # push to origin/main with canonical gates
-push: check-on-default-branch lint test
+# ensure-clean: bump-semver vcs push は clean 保証を含まない (`--force` すら明示的に外している
+# push-only ツール、`bump-semver vcs push --help` 実機確認 2026-07-16) — したがって未コミットの
+# 未認識変更を巻き込ませないため push gate に明示 dependency として追加する (codex #1 m-2、
+# 統括裁定 2026-07-16、[[push-workflow]] の「path 指定 commit 必須」safety net と同根)。
+push: ensure-clean check-on-default-branch lint test
     bump-semver vcs push --branch "$(bump-semver vcs get default-branch)" --jj-bookmark-auto-advance
     cmux-msg notify --self --text "Monitor で 'just watch' を起動して" 2>/dev/null || true
 

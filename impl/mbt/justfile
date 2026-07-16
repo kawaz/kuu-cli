@@ -19,16 +19,24 @@ default: lint test
 
 # ---------- setup ----------
 
-# kuu.mbt の main workspace を deps/kuu.mbt に symlink する (moon.work member 解決用)。
-# CI では git clone した SHA-pin checkout をこの path に置く想定 (DR-0001 §2 Consequences)。
+# kuu.mbt の main workspace を deps/kuu.mbt に用意する (moon.work member 解決用)。
+# 判定順序 (codex #1 M-3 修正、統括裁定 2026-07-16):
+#   1. deps/kuu.mbt が **real directory** (symlink でない実ディレクトリ) → そのまま受理。
+#      CI の SHA-pin `git clone` checkout をこの path に置く想定 (DR-0001 §2 Consequences) で、
+#      既存 checkout を上書き / 別 path に読み替えると再現性を壊す。**sibling 検査より先に置く**。
+#   2. deps/kuu.mbt が symlink → 想定 path (../../../../../kuu.mbt/main) と一致するか確認、
+#      違えば refresh (dev 環境の symlink 貼り替え)。sibling が無ければ error にせずリンク保持
+#      (実体解決の diagnostic は moon 側に任せる)
+#   3. deps/kuu.mbt が未作成 → sibling kuu.mbt の存在を検査し、リンクを作る (dev 環境の初回)。
+#      **sibling 検査はここだけに移動**した (M-3 修正前は先頭で必須にしていたので CI checkout
+#      を silently 拒否していた)
 [script]
 setup:
-    ln_target="{{KUU_MBT_ROOT}}"
     link="{{MBT_ROOT}}/deps/kuu.mbt"
-    if [[ ! -d "$ln_target" ]]; then
-      printf >&2 "impl/mbt: kuu.mbt not found at %s\n" "$ln_target"
-      printf >&2 "impl/mbt: check out kawaz/kuu.mbt as a sibling of kawaz/kuu-cli first.\n"
-      exit 2
+    ln_target="{{KUU_MBT_ROOT}}"
+    if [[ -d "$link" && ! -L "$link" ]]; then
+      # real directory (CI SHA-pin checkout 想定) — そのまま受理
+      exit 0
     fi
     if [[ -L "$link" ]]; then
       cur=$(readlink "$link")
@@ -36,12 +44,20 @@ setup:
         printf "impl/mbt: refreshing symlink deps/kuu.mbt -> ../../../../../kuu.mbt/main (was: %s)\n" "$cur"
         ln -sfn ../../../../../kuu.mbt/main "$link"
       fi
-    elif [[ -e "$link" ]]; then
-      printf >&2 "impl/mbt: deps/kuu.mbt exists but is not a symlink; leaving it alone (CI checkout?)\n"
-    else
-      printf "impl/mbt: creating symlink deps/kuu.mbt -> ../../../../../kuu.mbt/main\n"
-      ln -sfn ../../../../../kuu.mbt/main "$link"
+      exit 0
     fi
+    if [[ -e "$link" ]]; then
+      printf >&2 "impl/mbt: deps/kuu.mbt exists but is not a directory or symlink; leaving it alone\n"
+      exit 0
+    fi
+    # deps/kuu.mbt 未作成 = dev 環境の初回。sibling が要る。
+    if [[ ! -d "$ln_target" ]]; then
+      printf >&2 "impl/mbt: kuu.mbt not found at %s\n" "$ln_target"
+      printf >&2 "impl/mbt: check out kawaz/kuu.mbt as a sibling of kawaz/kuu-cli, or place a SHA-pin checkout at deps/kuu.mbt.\n"
+      exit 2
+    fi
+    printf "impl/mbt: creating symlink deps/kuu.mbt -> ../../../../../kuu.mbt/main\n"
+    ln -sfn ../../../../../kuu.mbt/main "$link"
 
 # ---------- lint / test ----------
 
@@ -65,14 +81,15 @@ test: setup
 #                                          export_map(ast) 経路の実機確認)
 [script]
 e2e:
+    # binary path 固定 (codex #1 m-1 修正、統括裁定 2026-07-16): `moon build --target native`
+    # は default = debug build なので、出力は `_build/native/debug/build/...`。旧実装は release
+    # path を先に探して fallback `find|head -1` で拾っていたが、workspace に stale build や
+    # 別 executable が混ざると誤実行しうる。build mode と exact artifact path を対で固定し、
+    # find fallback を削除する。
     cd "{{MBT_ROOT}}" && moon build --target native
-    bin="{{MBT_ROOT}}/_build/native/release/build/kawaz/kuu-cli-mbt/main/main.exe"
+    bin="{{MBT_ROOT}}/_build/native/debug/build/kawaz/kuu-cli-mbt/main/main.exe"
     if [[ ! -x "$bin" ]]; then
-      # release ビルドが .exe ではなく別名で置かれる場合の fallback
-      bin=$(find "{{MBT_ROOT}}/_build/native" -type f -name 'main*' -perm -u+x 2>/dev/null | head -1)
-    fi
-    if [[ -z "$bin" || ! -x "$bin" ]]; then
-      printf >&2 "e2e: main binary not found under _build/native\n"
+      printf >&2 "e2e: main binary not found at expected path %s (moon build failed or output layout changed?)\n" "$bin"
       exit 2
     fi
     def_only=$(mktemp)
