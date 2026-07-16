@@ -375,10 +375,8 @@ conformance:
       "$pass" "$total" "$fail" "$blocked" "$skip"
     # 回帰 gate (統括裁定 r27m18-1): pass 数が baseline を割ったら red。baseline は fail の
     # 解消に合わせて**手動**で上げる (自動追従は ratchet の逆回転 = 新規 fail を隠すので不可)。
-    # 現 baseline の根拠: UX-Q7R 実装追随 (kuu.mbt pin 071d4ae4 = default 充填判定を export_key
-    # 適用後の結果 cell 単位に) で single-exposure-ok が解消 + collision.json の新 case 2 件
-    # (env-claim-collision / defaults-only-no-collision) が pass、560→563 (fail 0)。
-    baseline=563
+    # 現 baseline は linked kuu.mbt fixture の query=parse 全 case が green の状態。
+    baseline=565
     if [[ "$pass" -lt "$baseline" ]]; then
       printf >&2 "conformance REGRESSION: pass=%d fell below baseline=%d\n" "$pass" "$baseline"
       exit 1
