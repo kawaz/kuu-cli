@@ -176,17 +176,20 @@ fn outcome_to_json(
   let ekmap = @kuu.export_map(ast)
   match po {
     @engine.Success(pbinds) => {
-      // parse 段の効果列は生 binds を素材にする (DR-045 §1 = cli fold の観測)。
-      let effects = effects_to_json(ast.root, pbinds)
       // resolve 相を通して値源ラダー (env / config / inherit / default) を充填 (DR-109 §7 =
       // 既定で resolve 適用、値源は §6 の実環境 / 試験用オプション経由で呼び出し側が確定済み)。
       let ro = @kuu.resolve(ast, po, args, env~, config~, tty~)
       match ro {
         @engine.Success(rbinds) => {
-          // result / sources は front_door の production 射影 (kuu.mbt MDR-005 追記、DR-109 §5
-          // の昇格) を使う — runner から写した 4 素材の手組みは重複だったので新 API に置換。
-          let result = rval_to_json(@kuu.result(ast, rbinds))
-          let sources = source_entries_to_json(@kuu.sources(ast, rbinds))
+          // effects / result / sources は front_door の OutputView 1 発 (kuu.mbt MDR-005 追記) を
+          // 使う — sentinel / config_file / none / dd の除外規則は front_door 側の正本 1 箇所に
+          // 集約済み (旧 `@kuu.is_sentinel` + 手組み `is_excluded_cell` の重複実装を解消)。
+          // effects は parse 段の生 binds (`pbinds`)、result / sources は resolve 済み binds
+          // (`rbinds`) から組む — 相区分は変えない (DR-045 §1 / DR-109 §5-§7 と同じ素材の対応)。
+          let view = @kuu.output(ast, pbinds, resolved=rbinds)
+          let effects = output_effects_to_json(view.effects)
+          let result = rval_to_json(view.result)
+          let sources = source_entries_to_json(view.sources)
           // warnings は空でも `[]` を出す (DR-109 §2 の厳密一致 — fixture の `warnings: []`
           // 期待と同形)。
           let ws = @engine.warnings_structured(po)
@@ -264,8 +267,8 @@ fn outcome_to_json(
 
 ///|
 /// `sources`: resolve 済み binds から entity → 値源タグのマップを組む (DR-109 §3 で常時出力、
-/// CONFORMANCE §2 — キーは scope-path 修飾)。射影本体は front_door の production API
-/// `@kuu.sources` (kuu.mbt MDR-005 追記) — ここは SourceEntry 列を JSON object に写すだけ。
+/// CONFORMANCE §2 — キーは scope-path 修飾)。射影本体は front_door の `OutputView.sources`
+/// (`@kuu.output`、kuu.mbt MDR-005 追記) — ここは SourceEntry 列を JSON object に写すだけ。
 fn source_entries_to_json(entries : Array[@kuu.SourceEntry]) -> Json {
   let items : Array[(String, Json)] = []
   for e in entries {
@@ -323,34 +326,25 @@ fn warnings_to_json(ws : Array[@engine.Warning]) -> Json {
 }
 
 ///|
-/// `effects`: DR-045 §1 effect column. `config_file`, `type:"none"`, and `dd` cells are excluded
-/// (mirrors `proj_effects_ex` in json_conformance_wbtest.mbt).
-fn effects_to_json(sc : @engine.Scope, binds : Array[@engine.Binding]) -> Json {
+/// `effects`: DR-045 §1 effect column. `OutputEffect` (kuu.mbt front_door.mbt) は sentinel
+/// (`[]` / `{}` / "" / `#row` / `#fire` / `@act:...` / `@depr:...`) と `config_file` /
+/// `type:"none"` / `dd` の内部セルを既に除外済み (front_door `project_effects` が正本、旧
+/// wire.mbt 手組み `is_excluded_cell` の重複実装は解消)。
+fn output_effects_to_json(effects : Array[@kuu.OutputEffect]) -> Json {
   let arr : Array[Json] = []
-  for b in binds {
-    // sentinel (`[]` / `{}` / "" / `#row` / `#fire` / `@act:...` / `@depr:...`) は effects の
-    // 素材ではない (kuu.mbt resolve.mbt の `is_sentinel`、pub 化済み — issue
-    // front-door-parse-missing-postprocessing、codex M-1 の `@depr:port` が effects に漏れる
-    // バグの根治)。旧 `is_sentinel_key` (`[]` / `{}` / `""` のみ) は狭すぎた。
-    if @kuu.is_sentinel(b.key) {
-      continue
-    }
-    if is_excluded_cell(sc, b.key) {
-      continue
-    }
+  for e in effects {
     let fields : Array[(String, Json)] = [
-      ("entity", Json::string(b.key)),
-      ("op", Json::string(effect_op_str(b.op))),
+      ("entity", Json::string(e.entity)),
+      ("op", Json::string(effect_op_str(e.op))),
     ]
-    // operand: only for Set / Remove (DR-045 §1 / DR-080 §2). default / unset / empty /
-    // splice / update carry no operand.
-    match b.op {
-      @engine.Set => fields.push(("operand", value_to_json(b.value)))
-      @engine.Remove => fields.push(("operand", value_to_json(b.value)))
-      _ => ()
+    // operand: OutputEffect.operand は Set / Remove のみ Some (front_door.mbt project_effects の
+    // 契約、DR-045 §1 / DR-080 §2 と同じ規則)。
+    match e.operand {
+      Some(v) => fields.push(("operand", value_to_json(v)))
+      None => ()
     }
     // update の transform / args (DR-077 §1/§2、CONFORMANCE §2 の effects 語彙)。
-    match b.op {
+    match e.op {
       @engine.Update(transform, targs) => {
         fields.push(("transform", Json::string(transform)))
         if targs.length() > 0 {
@@ -359,7 +353,7 @@ fn effects_to_json(sc : @engine.Scope, binds : Array[@engine.Binding]) -> Json {
       }
       _ => ()
     }
-    fields.push(("source", Json::string(source_str(b.source))))
+    fields.push(("source", Json::string(source_str(e.source))))
     // `scope` は fixture expect の effects 語彙に無い (CONFORMANCE §2 = {entity, op, operand?,
     // source, transform?, args?})。DR-109 §2 の厳密一致に従い出さない。
     arr.push(Json::object(Map::from_array(fields)))
@@ -552,50 +546,6 @@ fn term_str(t : @engine.TermHint) -> String {
 // ═════════════════════════════════════════════════════════════════════════════
 // SECTION 5 — helpers
 // ═════════════════════════════════════════════════════════════════════════════
-
-///|
-/// True when the entity of key `k` in scope `sc` has a config_file, TNone, or dd role — such
-/// bindings are internal markers, not user-visible effects. Mirrors the trio of exclusions in
-/// `proj_effects_ex` (json_conformance_wbtest.mbt). dd is a greedy-scan pattern — see
-/// `is_dd_cell_scan`.
-fn is_excluded_cell(sc : @engine.Scope, k : String) -> Bool {
-  for e in sc.entities {
-    if e.name == k && (e.is_config_file || e.ty.name() == "none") {
-      return true
-    }
-  }
-  is_dd_cell_scan(sc, k)
-}
-
-///|
-/// Walk the scope's greedy nodes looking for a DdSat/DdMatchSat trigger named `k`, recursing
-/// into command scopes. Mirrors `is_dd_cell` in json_conformance_wbtest.mbt.
-fn is_dd_cell_scan(sc : @engine.Scope, k : String) -> Bool {
-  fn scan(g : @engine.Node) -> Bool {
-    match g {
-      @engine.DdSat(trigger) => trigger == k
-      @engine.DdMatchSat(_, _, _, elem_name) => elem_name == k
-      @engine.Or(alts) => {
-        for a in alts {
-          if scan(a) {
-            return true
-          }
-        }
-        false
-      }
-      @engine.Rooted(inner, _) => scan(inner)
-      @engine.CmdSat(_, child) => is_dd_cell_scan(child, k)
-      _ => false
-    }
-  }
-
-  for g in sc.greedy {
-    if scan(g) {
-      return true
-    }
-  }
-  false
-}
 
 ///|
 /// Wrap an error kind + message into a JSON string (used for CLI-boundary errors).
