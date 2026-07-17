@@ -368,17 +368,17 @@ fn effects_to_json(sc : @engine.Scope, binds : Array[@engine.Binding]) -> Json {
 }
 
 ///|
-fn rval_to_json(r : @kuu.RVal) -> Json {
+fn rval_to_json(r : @engine.RVal) -> Json {
   match r {
-    @kuu.RScalar(v) => value_to_json(v)
-    @kuu.RArr(xs) => {
+    @engine.RScalar(v) => value_to_json(v)
+    @engine.RArr(xs) => {
       let arr : Array[Json] = []
       for x in xs {
         arr.push(rval_to_json(x))
       }
       Json::array(arr)
     }
-    @kuu.RObj(kv) => {
+    @engine.RObj(kv) => {
       let pairs : Array[(String, Json)] = []
       for kv2 in kv {
         pairs.push((kv2.0, rval_to_json(kv2.1)))
