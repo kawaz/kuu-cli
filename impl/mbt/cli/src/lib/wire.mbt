@@ -393,6 +393,11 @@ fn value_to_json(v : @engine.Value) -> Json {
   match v {
     @engine.VStr(s) => Json::string(s)
     @engine.VBool(b) => Json::boolean(b)
+    // DR-092 §1/§2: JSON に inf リテラルは無いため、float 値位置の無限大は
+    // protobuf3 準拠の文字列 sentinel ("Infinity" / "-Infinity") で表現する。
+    // NaN は DR-074 で parse 段 Reject 済み (両型 Error) のためここに到達しない。
+    @engine.VNum(d) if d.is_pos_inf() => Json::string("Infinity")
+    @engine.VNum(d) if d.is_neg_inf() => Json::string("-Infinity")
     @engine.VNum(d) => Json::number(d)
   }
 }

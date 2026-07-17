@@ -253,7 +253,7 @@ conformance:
     fi
     def_only=$(mktemp); fail_log=$(mktemp)
     trap 'rm -f "$def_only" "$fail_log"' EXIT
-    pass=0; fail=0; skip=0; blocked=0
+    pass=0; fail=0; skip=0
     # find で全階層を走査 (lowering/ は fixtures/lowering/<sub>/*.json の 2 階層構成なので
     # glob */*.json だと skip 集計からも漏れる)
     while IFS= read -r fx; do
@@ -267,13 +267,6 @@ conformance:
       jq '.definition' "$fx" > "$def_only"
       for i in $(seq 0 $((n_cases - 1))); do
         id=$(jq -r --argjson i "$i" '.cases[$i].id' "$fx")
-        # blocked-skip: Infinity 期待 (spec 側の表現裁定待ち、統括指示 r27m11)。
-        # config_files はもう block しない — --config-file <path> <json> 2 引数形で注入する
-        # (UX-Q8 裁定 2026-07-16、実装 = 本 CLI の parse subcommand)。
-        if jq -e --argjson i "$i" '.cases[$i].expect | tostring | test("Infinity")' "$fx" >/dev/null; then
-          blocked=$((blocked + 1))
-          continue
-        fi
         mapfile -t args < <(jq -r --argjson i "$i" '.cases[$i].args[]' "$fx")
         # 環境固定 (DR-109 §6 の試験用オプション): 実環境継承を切り (--no-env、config は
         # fixture が供給する場合のみ --config 注入 / 無ければ --no-config)、fixture の
@@ -371,12 +364,12 @@ conformance:
       printf "  %-20s %3d/%3d pass\n" "$d" "$((dt - df))" "$dt"
     done
     rm -f /tmp/confdirs.$$
-    printf "conformance: %d/%d parse cases pass (%d fail), %d blocked-skip (Infinity), %d skipped (query != parse)\n" \
-      "$pass" "$total" "$fail" "$blocked" "$skip"
+    printf "conformance: %d/%d parse cases pass (%d fail), %d skipped (query != parse)\n" \
+      "$pass" "$total" "$fail" "$skip"
     # 回帰 gate (統括裁定 r27m18-1): pass 数が baseline を割ったら red。baseline は fail の
     # 解消に合わせて**手動**で上げる (自動追従は ratchet の逆回転 = 新規 fail を隠すので不可)。
     # 現 baseline は linked kuu.mbt fixture の query=parse 全 case が green の状態。
-    baseline=565
+    baseline=569
     if [[ "$pass" -lt "$baseline" ]]; then
       printf >&2 "conformance REGRESSION: pass=%d fell below baseline=%d\n" "$pass" "$baseline"
       exit 1
