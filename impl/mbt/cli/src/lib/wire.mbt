@@ -20,7 +20,7 @@
 //     を適用した kv projection
 //   - `sources`: resolve 済み出力に常時含める (DR-109 §3)。entity → 値源タグのマップ、キーは
 //     scope-path 修飾 (CONFORMANCE §2)
-//   - `warnings`: `warnings_structured(parse_outcome)` → `{element, kind}` の object 配列
+//   - `warnings`: `@kuu.warnings(parse_outcome)` (kuu 玄関 API) → `{element, kind}` の object 配列
 //     (spec CONFORMANCE §2)。空でも `[]` を出す (fixture の `warnings: []` 期待と厳密一致)
 //   - `interpretations` (ambiguous): 各解釈の `{result, claimants?}` (DR-053 §3 / DR-073)。
 //     resolve 相は適用しない (DR-109 §4 — parse 相の骨格のみ)
@@ -173,7 +173,6 @@ fn outcome_to_json(
   config : (String) -> @engine.ConfigVal?,
   tty : Map[String, @kuu.TtyObs],
 ) -> (Json, Int) {
-  let ekmap = @kuu.export_map(ast)
   match po {
     @engine.Success(pbinds) => {
       // resolve 相を通して値源ラダー (env / config / inherit / default) を充填 (DR-109 §7 =
@@ -192,7 +191,7 @@ fn outcome_to_json(
           let sources = source_entries_to_json(view.sources)
           // warnings は空でも `[]` を出す (DR-109 §2 の厳密一致 — fixture の `warnings: []`
           // 期待と同形)。
-          let ws = @engine.warnings_structured(po)
+          let ws = @kuu.warnings(po)
           let fields : Array[(String, Json)] = [
             ("outcome", Json::string("success")),
             ("effects", effects),
@@ -202,41 +201,37 @@ fn outcome_to_json(
           ]
           (Json::object(Map::from_array(fields)), 0)
         }
-        @engine.Failure(d) => {
+        @engine.Failure(d) =>
           // 値源解決 (env/config seat parse や DR-009 §7 filter reject) で転落した場合は
           // failure JSON を返す (spec DR-053 §2 の failure に resolve 相失敗も含まれる)。
           // warnings は parse Outcome から取る (deprecated marker は parse 段の binds に載る)。
           (failure_to_json(d, po), 1)
-        }
         _ =>
           // spec 上 `resolve` は Ambiguous をパススルーするだけで新規 Ambiguous 化することは
           // ない (kuu.mbt MDR-005 §1)。到達不可の安全網。
-          (failure_to_json(
-            {
-              errors: [],
-              fired_action: None,
-              help_entry: None,
-              tried_triggers: [],
-            },
-            po,
-          ), 1)
+          (
+            failure_to_json(
+              {
+                errors: [],
+                fired_action: None,
+                help_entry: None,
+                tried_triggers: [],
+              },
+              po,
+            ),
+            1,
+          )
       }
     }
     @engine.Failure(d) => (failure_to_json(d, po), 1)
     @engine.Ambiguous(d) => {
       // DR-109 §4: interpretation は resolve 相を適用せず parse 相の骨格のみ返す。各解釈は
       // result ビュー (claimants 無し) または `{result, claimants}` (共露出衝突あり、DR-073 §1
-      // の「組で保持」)。ビューの組み立ては conformance runner の render (build_result に
-      // defaults を渡さない = ラダー未適用の parse 素材のみ) と同じ。
+      // の「組で保持」)。ビューの組み立ては kuu 玄関 API `@kuu.output_of_interpretation` へ委譲
+      // (TRI-Q4、部品直呼びを解消)。
       let arr : Array[Json] = []
       for interp in d.interpretations {
-        let view = @kuu.build_result(
-          @kuu.apply_export_keys(interp.binds, ekmap),
-          @kuu.accum_cells(ast.root, ekmap),
-          [],
-          [],
-          nones=@engine.none_cells(ast.root),
-        )
+        let view = @kuu.output_of_interpretation(ast, interp)
         if interp.claimants.length() == 0 {
           arr.push(rval_to_json(view))
         } else {
@@ -301,7 +296,7 @@ fn failure_to_json(d : @engine.FailureData, po : @engine.Outcome) -> Json {
     Some(h) => fields.push(("help_entry", Json::string(h)))
     None => ()
   }
-  let ws = @engine.warnings_structured(po)
+  let ws = @kuu.warnings(po)
   if ws.length() > 0 {
     fields.push(("warnings", warnings_to_json(ws)))
   }
@@ -310,8 +305,8 @@ fn failure_to_json(d : @engine.FailureData, po : @engine.Outcome) -> Json {
 
 ///|
 /// `warnings`: spec CONFORMANCE §2 が要求する `{element, kind}` の object 配列。素材は
-/// `@engine.warnings_structured` (kuu.mbt eval.mbt、旧 `warnings_of` の element 配列を kind 情報
-/// つきに拡張したもの、codex M-1 解消)。
+/// `@kuu.warnings` (kuu 玄関 API、内部は kuu.mbt eval.mbt の `warnings_structured` へ委譲。旧
+/// `warnings_of` の element 配列を kind 情報つきに拡張したもの、codex M-1 解消)。
 fn warnings_to_json(ws : Array[@engine.Warning]) -> Json {
   let arr : Array[Json] = []
   for w in ws {
