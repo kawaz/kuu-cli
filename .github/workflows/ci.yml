@@ -22,7 +22,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: kawaz/kuu.mbt
-          ref: e7d7103d34277bda25cfb337e35633075dc9c587
+          ref: 6a8173ee0956d6ba1b2aba45fe63e500fdf35e23
           path: impl/mbt/deps/kuu.mbt
 
       - name: Checkout kuu spec fixtures (SHA-pinned)
