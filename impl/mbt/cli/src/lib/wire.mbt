@@ -338,12 +338,15 @@ fn output_effects_to_json(effects : Array[@kuu.OutputEffect]) -> Json {
       Some(v) => fields.push(("operand", value_to_json(v)))
       None => ()
     }
-    // update の transform / args (DR-077 §1/§2、CONFORMANCE §2 の effects 語彙)。
+    // update (旧 Update(transform, args) / DR-114 で Invoke(FnInvocation) へ改称) の transform /
+    // args (DR-077 §1/§2、CONFORMANCE §2 の effects 語彙)。実 fixture (count-parse 等) では
+    // front_door `project_effects` が descriptor 呼び出しで既に Set に折り畳んでいるため、Invoke
+    // arm がここに残るのは descriptor 未登録の safety net 経路のみ (旧 Update 経路と同じ書式で emit)。
     match e.op {
-      @engine.Update(transform, targs) => {
-        fields.push(("transform", Json::string(transform)))
-        if targs.length() > 0 {
-          fields.push(("args", strs_to_json(targs)))
+      @engine.Invoke(inv) => {
+        fields.push(("transform", Json::string(inv.name)))
+        if inv.args.length() > 0 {
+          fields.push(("args", strs_to_json(inv.args)))
         }
       }
       _ => ()
@@ -489,7 +492,7 @@ fn effect_op_str(op : @engine.EffectOp) -> String {
     @engine.Default => "default"
     @engine.Unset => "unset"
     @engine.Empty => "empty"
-    @engine.Update(_, _) => "update"
+    @engine.Invoke(_) => "update"
     @engine.Remove => "remove"
     @engine.Splice => "splice"
   }
