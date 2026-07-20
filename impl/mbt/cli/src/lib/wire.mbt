@@ -659,7 +659,12 @@ fn help_model_json(model : @kuu.HelpModel) -> Json {
   let object : Map[String, Json] = Map([])
   object.set("outcome", Json::string("help"))
   object.set("command_path", strs_to_json(model.command_path))
-  object.set("usage", help_usage_json(model.usage))
+  if model.usage.has_options ||
+    model.usage.positionals.length() > 0 ||
+    model.usage.has_subcommands ||
+    model.usage.has_dd {
+    object.set("usage", help_usage_json(model.usage))
+  }
   match model.description {
     Some(v) => object.set("description", Json::string(v))
     None => ()
@@ -670,6 +675,10 @@ fn help_model_json(model : @kuu.HelpModel) -> Json {
   }
   match model.epilog {
     Some(v) => object.set("epilog", Json::string(v))
+    None => ()
+  }
+  match model.render {
+    Some(view) => object.set("render", help_render_view_json(view))
     None => ()
   }
   if model.types.length() > 0 {
@@ -702,6 +711,28 @@ fn help_model_json(model : @kuu.HelpModel) -> Json {
   }
   match model.help_entry {
     Some(v) => object.set("help_entry", Json::string(v))
+    None => ()
+  }
+  Json::object(object)
+}
+
+///|
+fn help_render_view_json(view : @kuu.HelpRenderView) -> Json {
+  let object : Map[String, Json] = Map([])
+  match view.template {
+    Some(v) => object.set("template", Json::string(v))
+    None => ()
+  }
+  match view.value_structure_style {
+    Some(v) => object.set("value_structure_style", Json::string(v))
+    None => ()
+  }
+  match view.types_style {
+    Some(v) => object.set("types_style", Json::string(v))
+    None => ()
+  }
+  match view.origin_style {
+    Some(v) => object.set("origin_style", Json::string(v))
     None => ()
   }
   Json::object(object)
@@ -779,6 +810,10 @@ fn help_command_json(c : @kuu.HelpCommand) -> Json {
 fn help_positional_json(p : @kuu.HelpPositional) -> Json {
   let object : Map[String, Json] = Map([])
   object.set("value_structure", help_value_structure_json(p.value_structure))
+  match p.value_structure_style {
+    Some(v) => object.set("value_structure_style", Json::string(v))
+    None => ()
+  }
   match p.help {
     Some(v) => object.set("help", Json::string(v))
     None => ()
@@ -806,7 +841,12 @@ fn help_option_entry_json(entry : @kuu.HelpOptionEntry) -> Json {
         Some(v) => group_obj.set("description", Json::string(v))
         None => ()
       }
-      Json::object({ "group": Json::object(group_obj) })
+      let object : Map[String, Json] = Map([])
+      object.set("group", Json::object(group_obj))
+      if g.hidden {
+        object.set("hidden", Json::boolean(true))
+      }
+      Json::object(object)
     }
     @kuu.Option(o) => help_option_json(o)
   }
@@ -821,6 +861,10 @@ fn help_option_json(o : @kuu.HelpOption) -> Json {
   }
   match o.value_structure {
     Some(vs) => object.set("value_structure", help_value_structure_json(vs))
+    None => ()
+  }
+  match o.value_structure_style {
+    Some(v) => object.set("value_structure_style", Json::string(v))
     None => ()
   }
   match o.display_name {
