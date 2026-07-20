@@ -74,8 +74,19 @@ fn main {
     "parse" => run_parse(rest)
     "complete" => run_complete(rest)
     "validate" => run_validate(rest)
-    "help" | "--help" => {
-      // 明示的な help 要求 → stdout (ユーザが読みたい情報、GNU coreutils 慣習)、exit 0
+    "help" => {
+      // `kuu help` (no args) → CLI usage (GNU coreutils 慣習、明示的 help 要求は stdout)。
+      // `kuu help <def.json> [--path ...] [--depth ...] [--category-mode ...]` → definition
+      // に対する DR-113 help_query capability 呼び出し (dogfooding — アプリ側 kuu と同じ
+      // capability を CLI 経由で叩ける)。
+      if rest.length() == 0 {
+        println(usage_text())
+        return
+      }
+      run_help(rest)
+    }
+    "--help" => {
+      // subcommand の隣に立つ大域フラグは meta 用途のみ (CLI 自体の usage 表示)、exit 0
       println(usage_text())
       return
     }
@@ -445,6 +456,83 @@ fn run_complete(args : Array[String]) -> @lib.CmdResult {
 }
 
 ///|
+/// help subcommand の usage (エラー時 stderr 表示の共通素材)。
+const HELP_USAGE : String = "kuu help [<def.json>] [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>]"
+
+///|
+/// `kuu help <def.json> [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>]`
+///
+/// - `--path`: root-first の command path (JSON string array、例 `["remote","add"]`)。既定は `[]` (ルート)
+/// - `--depth`: `scope` (既定、選択 scope の 1 層) / `all` (子孫 scope を再帰埋め込み、DR-113 §4.4)
+/// - `--category-mode`: `default` (既定) / `all` / `named:<name>` (DR-113 §1 の 3 分岐、HIP-META-Q13=a)
+///
+/// 出力は spec の help wire model (schema `$defs/helpModel`) を stdout に emit する canonical JSON。
+/// 人間向けの整形は別 issue (spec docs/issue/2026-07-18-help-renderer-design.md) にスコープアウト。
+fn run_help(args : Array[String]) -> @lib.CmdResult {
+  // args[0] は `main` からの経路で既に非空 (先頭は <def.json>)。
+  let def_path = args[0]
+  let def_text = match read_file_all(def_path) {
+    Ok(s) => s
+    Err(msg) => usage_die("kuu help: " + msg, HELP_USAGE)
+  }
+  let mut path : Array[String] = []
+  let mut depth : @kuu.HelpDepth = @kuu.DScope
+  let mut category_mode : @kuu.HelpCategoryMode = @kuu.HCMDefault
+  let mut i = 1
+  while i < args.length() {
+    let a = args[i]
+    if a == "--path" && i + 1 < args.length() {
+      path = match parse_str_array(args[i + 1]) {
+        Ok(xs) => xs
+        Err(msg) => usage_die("kuu help: --path " + msg, HELP_USAGE)
+      }
+      i = i + 2
+    } else if a == "--depth" && i + 1 < args.length() {
+      depth = match args[i + 1] {
+        "scope" => @kuu.DScope
+        "all" => @kuu.DAll
+        other =>
+          usage_die(
+            "kuu help: --depth expects 'scope' or 'all', got '" + other + "'",
+            HELP_USAGE,
+          )
+      }
+      i = i + 2
+    } else if a == "--category-mode" && i + 1 < args.length() {
+      category_mode = match parse_category_mode(args[i + 1]) {
+        Ok(cm) => cm
+        Err(msg) => usage_die("kuu help: --category-mode " + msg, HELP_USAGE)
+      }
+      i = i + 2
+    } else {
+      usage_die("kuu help: unexpected arg '" + a + "'", HELP_USAGE)
+    }
+  }
+  @lib.cmd_help(def_text, path, depth, category_mode)
+}
+
+///|
+/// `--category-mode` の値解析: `default` / `all` / `named:<name>` を受ける。`named:` の後ろは
+/// 任意文字列 (空文字は不採用 = usage error、DR-113 §1 が named の identity として空 name を
+/// 認めない — schema `named` 参照)。
+fn parse_category_mode(s : String) -> Result[@kuu.HelpCategoryMode, String] {
+  if s == "default" {
+    Ok(@kuu.HCMDefault)
+  } else if s == "all" {
+    Ok(@kuu.HCMAll)
+  } else if s.length() >= 6 && s[0:6].to_owned() == "named:" {
+    let name = s[6:].to_owned()
+    if name == "" {
+      Err("'named:' requires a non-empty name")
+    } else {
+      Ok(@kuu.HCMNamed(name))
+    }
+  } else {
+    Err("expects 'default' | 'all' | 'named:<name>', got '" + s + "'")
+  }
+}
+
+///|
 /// `kuu validate <def.json>`。余剰引数 (2 番目以降の positional) は usage error (M-5、
 /// codex #1、統括裁定 2026-07-16): 「validate は path 先頭だけ読み余剰引数を検査しない」
 /// バグを潰す。
@@ -515,7 +603,7 @@ fn usage_text() -> String {
     #|  kuu parse    <def.json> [options] [--] <args...>
     #|  kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]
     #|  kuu validate <def.json>
-    #|  kuu help
+    #|  kuu help     [<def.json> [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>]]
     #|
     #|parse options (value-source control; default = the real environment, DR-109 §6):
     #|  --no-env             ignore real environment variables
@@ -530,7 +618,15 @@ fn usage_text() -> String {
     #|
     #|  Note: --no-config / --config / --config-file are mutually exclusive.
     #|
-    #|Exit codes: 0=success, 1=parse/validate failure, 2=usage error.
+    #|help options (DR-113 help_query capability; canonical JSON model output — human rendering is separate):
+    #|  --path <json-array>  root-first command path (default []); e.g. '["remote","add"]'
+    #|  --depth scope|all    'scope' (default) = selected scope only; 'all' = recursively embed subscopes
+    #|  --category-mode ...  'default' (default) | 'all' | 'named:<name>' (DR-113 §1 3-way; default/all
+    #|                       share the same model material, named filters to entries in that group)
+    #|
+    #|  Note: 'kuu help' with no arguments prints this usage; provide <def.json> to run a help query.
+    #|
+    #|Exit codes: 0=success, 1=parse/validate/help failure, 2=usage error.
     #|Output channels: machine JSON is on stdout; human text (usage / errors) is on stderr.
   text
 }

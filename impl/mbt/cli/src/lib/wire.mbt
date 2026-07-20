@@ -114,6 +114,71 @@ pub fn cmd_complete(
 }
 
 ///|
+/// `kuu help <def_json_text> [--path ...] [--depth ...] [--category-mode ...]`:
+/// dispatch the DR-113 §1 help_query capability against the parsed definition and emit the
+/// canonical help model JSON (schema `$defs/helpModel` — mirrors kuu.mbt json_conformance_test
+/// のシリアライズ経路。§4/§4.4 準拠、余剰キー不出力)。
+///
+/// - Ok(HelpModel) → `{"outcome":"help", ...}` (exit 0)
+/// - Err(HelpQueryError) → `{"outcome":"query-error","errors":[{"kind":"absent-path"|"absent-category"}]}` (exit 1)
+/// - malformed definition JSON → exit 2 (parse subcommand と同じ扱い)
+/// - malformed definition (Rejected) → definition-error JSON (exit 1)
+/// - help_query capability 未登録 → exit 2 の error_json (canonical registry は必ず含むので通常発生しない)
+pub fn cmd_help(
+  def_text : String,
+  path : Array[String],
+  depth : @kuu.HelpDepth,
+  category_mode : @kuu.HelpCategoryMode,
+) -> CmdResult {
+  let defj = @json.parse(def_text) catch {
+    _ =>
+      return {
+        json: error_json(
+          "malformed_definition_json", "definition text is not valid JSON",
+        ),
+        exit: 2,
+      }
+  }
+  // capability lookup 経路のため extensions を明示ビルドする (canonical と同じ = @kuu.install)。
+  let registry = @engine.Registry::new()
+  @kuu.install(registry)
+  match @kuu.parse_definition(defj, extensions=registry) {
+    Err(@kuu.Malformed(reason)) =>
+      { json: error_json("malformed_definition", reason), exit: 1 }
+    Err(@kuu.Rejected(errs)) =>
+      // help wire envelope (DR-113 §9): {"outcome":"definition-error","errors":[{"element","kind"}]}
+      // fixture の allowed_keys が element+kind に限られており、message / hint は出さない
+      // (DR-109 §2 の「余剰フィールドは出さない」を help 経路にも適用)。help 以外の subcommand
+      // 経路 (parse / complete / validate) では従来通り def_errors_json(message + hint 含む) を
+      // 使う — spec の envelope が subcommand で異なるための分岐 (help は query 前提の canonical
+      // JSON wire、他は legacy CLI 慣習)。
+      { json: def_errors_help_envelope(errs).stringify(indent=2), exit: 1 }
+    Ok(ast) =>
+      match
+        @kuu.dispatch_help_query(
+          registry,
+          ast,
+          path~,
+          depth~,
+          category_mode~,
+        ) {
+        None =>
+          {
+            json: error_json(
+              "help_query_not_registered",
+              "help_query capability is not registered in the active assembly",
+            ),
+            exit: 2,
+          }
+        Some(Err(err)) =>
+          { json: help_query_error_json(err).stringify(indent=2), exit: 1 }
+        Some(Ok(model)) =>
+          { json: help_model_json(model).stringify(indent=2), exit: 0 }
+      }
+  }
+}
+
+///|
 /// `kuu validate <def_json_text>`: decode + lowering only; report definition errors.
 /// Emits `{"ok":true}` (exit 0) or `{"ok":false,"errors":[...]}` (exit 1). Exit 2 on
 /// malformed JSON.
@@ -538,6 +603,364 @@ fn term_str(t : @engine.TermHint) -> String {
   match t {
     @engine.WordEnd => "word_end"
     @engine.Cont => "cont"
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SECTION 4b — help model → JSON (DR-113 §4/§4.4 wire format)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// kuu.mbt (src/kuu/json_conformance_test.mbt) の help_* helpers を wire 語彙のまま移植。
+// schema (`$defs/helpModel` 等) と fixture expect の厳密一致が要件 (DR-109 §2 と同じ思想:
+// 期待に無いキーは emit しない、schema required キーは false でも emit)。
+
+///|
+/// DR-113 §1/§9 query-error envelope の serialize。help_query 固有の失敗 (合法な definition に
+/// 対する呼び出し側入力の失敗) を definition-error と別 outcome で pin する。fixture 期待は
+/// `{"outcome":"query-error","errors":[{"kind":"absent-path"}]}` の形式。
+fn help_query_error_json(err : @kuu.HelpQueryError) -> Json {
+  let kind = match err {
+    @kuu.HQAbsentPath => "absent-path"
+    @kuu.HQAbsentCategory => "absent-category"
+  }
+  Json::object({
+    "outcome": Json::string("query-error"),
+    "errors": Json::array([Json::object({ "kind": Json::string(kind) })]),
+  })
+}
+
+///|
+/// help wire の definition-error envelope (DR-113 §9)。help_query は「合法な definition」を前提と
+/// するので、definition が Rejected な場合は query 経路を通さず `{"outcome":"definition-error",
+/// "errors":[{"element","kind"}]}` を返す。message / hint は fixture allowed_keys 外なので出さない。
+fn def_errors_help_envelope(errs : Array[@engine.DefError]) -> Json {
+  let arr : Array[Json] = []
+  for e in errs {
+    let fields : Array[(String, Json)] = []
+    // element 空文字は「帰属先なし」— fixture 側も element キー自体を省略するので同形で omit
+    // (parse errors の parse_errors_to_json と同じ規則、DR-109 §2 の厳密一致方針)。
+    if e.element.length() > 0 {
+      fields.push(("element", Json::string(e.element)))
+    }
+    fields.push(("kind", Json::string(deferr_kind_str(e.kind))))
+    arr.push(Json::object(Map::from_array(fields)))
+  }
+  Json::object({
+    "outcome": Json::string("definition-error"),
+    "errors": Json::array(arr),
+  })
+}
+
+///|
+fn help_model_json(model : @kuu.HelpModel) -> Json {
+  let object : Map[String, Json] = Map([])
+  object.set("outcome", Json::string("help"))
+  object.set("command_path", strs_to_json(model.command_path))
+  object.set("usage", help_usage_json(model.usage))
+  match model.description {
+    Some(v) => object.set("description", Json::string(v))
+    None => ()
+  }
+  match model.description_long {
+    Some(v) => object.set("description_long", Json::string(v))
+    None => ()
+  }
+  match model.epilog {
+    Some(v) => object.set("epilog", Json::string(v))
+    None => ()
+  }
+  if model.types.length() > 0 {
+    let arr : Array[Json] = []
+    for e in model.types {
+      arr.push(help_type_entry_json(e))
+    }
+    object.set("types", Json::array(arr))
+  }
+  if model.commands.length() > 0 {
+    let arr : Array[Json] = []
+    for c in model.commands {
+      arr.push(help_command_json(c))
+    }
+    object.set("commands", Json::array(arr))
+  }
+  if model.options.length() > 0 {
+    let arr : Array[Json] = []
+    for o in model.options {
+      arr.push(help_option_entry_json(o))
+    }
+    object.set("options", Json::array(arr))
+  }
+  if model.positionals.length() > 0 {
+    let arr : Array[Json] = []
+    for p in model.positionals {
+      arr.push(help_positional_json(p))
+    }
+    object.set("positionals", Json::array(arr))
+  }
+  match model.help_entry {
+    Some(v) => object.set("help_entry", Json::string(v))
+    None => ()
+  }
+  Json::object(object)
+}
+
+///|
+fn help_usage_json(usage : @kuu.HelpUsage) -> Json {
+  let object : Map[String, Json] = Map([])
+  if usage.has_options {
+    object.set("has_options", Json::boolean(true))
+  }
+  if usage.positionals.length() > 0 {
+    let arr : Array[Json] = []
+    for p in usage.positionals {
+      arr.push(help_usage_positional_json(p))
+    }
+    object.set("positionals", Json::array(arr))
+  }
+  if usage.has_subcommands {
+    object.set("has_subcommands", Json::boolean(true))
+  }
+  if usage.has_dd {
+    object.set("has_dd", Json::boolean(true))
+  }
+  Json::object(object)
+}
+
+///|
+fn help_usage_positional_json(p : @kuu.HelpUsagePositional) -> Json {
+  Json::object({
+    "value_structure": help_value_structure_json(p.value_structure),
+  })
+}
+
+///|
+fn help_type_entry_json(entry : @kuu.HelpTypeEntry) -> Json {
+  let out : Map[String, Json] = Map([])
+  out.set("id", Json::string(entry.id))
+  out.set("value_structure", help_value_structure_json(entry.value_structure))
+  match entry.help {
+    Some(v) => out.set("help", Json::string(v))
+    None => ()
+  }
+  out.set("used_as", strs_to_json(entry.used_as))
+  Json::object(out)
+}
+
+///|
+fn help_command_json(c : @kuu.HelpCommand) -> Json {
+  let object : Map[String, Json] = Map([])
+  object.set("name", Json::string(c.name))
+  if c.aliases.length() > 0 {
+    object.set("aliases", strs_to_json(c.aliases))
+  }
+  match c.help {
+    Some(v) => object.set("help", Json::string(v))
+    None => ()
+  }
+  match c.help_long {
+    Some(v) => object.set("help_long", Json::string(v))
+    None => ()
+  }
+  // hidden / deprecated / origin は schema required — false でも常時 emit (DR-113 §4/§4.4)。
+  object.set("hidden", Json::boolean(c.hidden))
+  object.set("deprecated", Json::boolean(c.deprecated))
+  object.set("origin", help_origin_json(c.origin))
+  match c.scope {
+    Some(sub) => object.set("scope", help_model_json(sub))
+    None => ()
+  }
+  Json::object(object)
+}
+
+///|
+fn help_positional_json(p : @kuu.HelpPositional) -> Json {
+  let object : Map[String, Json] = Map([])
+  object.set("value_structure", help_value_structure_json(p.value_structure))
+  match p.help {
+    Some(v) => object.set("help", Json::string(v))
+    None => ()
+  }
+  match p.help_long {
+    Some(v) => object.set("help_long", Json::string(v))
+    None => ()
+  }
+  object.set("hidden", Json::boolean(p.hidden))
+  object.set("deprecated", Json::boolean(p.deprecated))
+  Json::object(object)
+}
+
+///|
+fn help_option_entry_json(entry : @kuu.HelpOptionEntry) -> Json {
+  match entry {
+    @kuu.HGroup(g) => {
+      let group_obj : Map[String, Json] = Map([])
+      group_obj.set("name", Json::string(g.name))
+      match g.title {
+        Some(v) => group_obj.set("title", Json::string(v))
+        None => ()
+      }
+      match g.description {
+        Some(v) => group_obj.set("description", Json::string(v))
+        None => ()
+      }
+      Json::object({ "group": Json::object(group_obj) })
+    }
+    @kuu.HOption(o) => help_option_json(o)
+  }
+}
+
+///|
+fn help_option_json(o : @kuu.HelpOption) -> Json {
+  let object : Map[String, Json] = Map([])
+  object.set("spellings", strs_to_json(o.spellings))
+  if o.alias_spellings.length() > 0 {
+    object.set("alias_spellings", strs_to_json(o.alias_spellings))
+  }
+  match o.value_structure {
+    Some(vs) => object.set("value_structure", help_value_structure_json(vs))
+    None => ()
+  }
+  match o.display_name {
+    Some(v) => object.set("display_name", Json::string(v))
+    None => ()
+  }
+  match o.help {
+    Some(v) => object.set("help", Json::string(v))
+    None => ()
+  }
+  match o.help_long {
+    Some(v) => object.set("help_long", Json::string(v))
+    None => ()
+  }
+  match o.help_group_name {
+    Some(v) => object.set("help_group_name", Json::string(v))
+    None => ()
+  }
+  match o.default_ {
+    Some(v) => object.set("default", help_default_json(v))
+    None => ()
+  }
+  // env: 1 要素は string、2 要素以上は array (DR-113 §4 wire schema)。
+  if o.env.length() == 1 {
+    object.set("env", Json::string(o.env[0]))
+  } else if o.env.length() > 1 {
+    object.set("env", strs_to_json(o.env))
+  }
+  if o.required {
+    object.set("required", Json::boolean(true))
+  }
+  if o.multiple {
+    object.set("multiple", Json::boolean(true))
+  }
+  object.set("hidden", Json::boolean(o.hidden))
+  object.set("deprecated", Json::boolean(o.deprecated))
+  object.set("origin", help_origin_json(o.origin))
+  Json::object(object)
+}
+
+///|
+fn help_origin_json(origin : @kuu.HelpOrigin) -> Json {
+  match origin {
+    @kuu.HOLocal => Json::string("local")
+    @kuu.HOGlobal(declared_at) =>
+      Json::object({
+        "kind": Json::string("global"),
+        "declared_at": strs_to_json(declared_at),
+      })
+    @kuu.HOInheritable(declared_at) =>
+      Json::object({
+        "kind": Json::string("inheritable"),
+        "declared_at": strs_to_json(declared_at),
+      })
+    @kuu.HOAlias(of) =>
+      Json::object({
+        "kind": Json::string("alias"),
+        "of": Json::string(of),
+      })
+  }
+}
+
+///|
+fn help_default_json(v : @kuu.HelpDefault) -> Json {
+  match v {
+    @kuu.HDefaultScalar(scalar) => help_value_json(scalar)
+    @kuu.HDefaultArray(values) => {
+      let arr : Array[Json] = []
+      for item in values {
+        arr.push(help_value_json(item))
+      }
+      Json::array(arr)
+    }
+  }
+}
+
+///|
+/// help model 内の default 値専用の Value → JSON 変換 (parse 相の value_to_json と別関数)。
+/// help wire ではスカラー 3 型 (string/number/bool) のみを直接 JSON リテラルへ落とす。float の
+/// ±∞ は spec 上 help_default に現れない (DR-113 §4)。
+fn help_value_json(v : @engine.Value) -> Json {
+  match v {
+    @engine.VStr(s) => Json::string(s)
+    @engine.VBool(b) => Json::boolean(b)
+    @engine.VNum(d) => Json::number(d)
+  }
+}
+
+///|
+fn help_value_structure_json(vs : @engine.HelpValueStructure) -> Json {
+  match vs {
+    @engine.HVSingle(single) => {
+      let inner : Map[String, Json] = Map([])
+      match single.value_name {
+        Some(v) => inner.set("value_name", Json::string(v))
+        None => ()
+      }
+      match single.type_ {
+        Some(t) => inner.set("type", Json::string(t))
+        None => ()
+      }
+      match single.values_enum {
+        Some(values) => inner.set("values_enum", strs_to_json(values))
+        None => ()
+      }
+      Json::object({ "single": Json::object(inner) })
+    }
+    @engine.HVSeq(nodes) => {
+      let arr : Array[Json] = []
+      for n in nodes {
+        arr.push(help_value_structure_json(n))
+      }
+      Json::object({ "seq": Json::array(arr) })
+    }
+    @engine.HVOr(nodes) => {
+      let arr : Array[Json] = []
+      for n in nodes {
+        arr.push(help_value_structure_json(n))
+      }
+      Json::object({ "or": Json::array(arr) })
+    }
+    @engine.HVRepeat(spec) => {
+      let inner : Map[String, Json] = Map([])
+      match spec.min {
+        Some(m) => inner.set("min", Json::number(m.to_double()))
+        None => ()
+      }
+      match spec.max {
+        Some(m) => inner.set("max", Json::number(m.to_double()))
+        None => ()
+      }
+      inner.set("node", help_value_structure_json(spec.node))
+      Json::object({ "repeat": Json::object(inner) })
+    }
+    @engine.HVTypeRef(ref_) => {
+      let out : Map[String, Json] = Map([])
+      out.set("type_ref", Json::string(ref_.id))
+      match ref_.value_name {
+        Some(v) => out.set("value_name", Json::string(v))
+        None => ()
+      }
+      Json::object(out)
+    }
   }
 }
 
