@@ -374,3 +374,79 @@ conformance:
       printf >&2 "conformance REGRESSION: pass=%d fell below baseline=%d\n" "$pass" "$baseline"
       exit 1
     fi
+
+# help conformance gate: fixtures/help/*.json (query "help" / "definition_error") を
+# `kuu help` 経由で走査し、expect と構造等価比較する (docs/issue/2026-07-21-help-conformance-no-gate.md)。
+# `conformance` recipe と違い query による skip は無い — help fixture は全 case が
+# 同じ `kuu help` コマンド 1 本で検証できる (definition-error / query-error も `kuu help`
+# の通常出力経路で outcome フィールドとして返る、別コマンドやエラー出力の突き合わせ不要
+# なことを実機確認済み)。
+[script]
+help-conformance:
+    cd "{{MBT_ROOT}}" && moon build --target native
+    bin="{{MBT_ROOT}}/_build/native/debug/build/kawaz/kuu-cli-mbt/main/main.exe"
+    if [[ ! -x "$bin" ]]; then
+      printf >&2 "help-conformance: main binary not found at %s\n" "$bin"
+      exit 2
+    fi
+    fixtures_dir="{{FIXTURES}}/help"
+    if [[ ! -d "$fixtures_dir" ]]; then
+      printf >&2 "help-conformance: fixtures dir not found at %s (set KUU_FIXTURES or check out kawaz/kuu as sibling)\n" "$fixtures_dir"
+      exit 2
+    fi
+    def_only=$(mktemp); fail_log=$(mktemp)
+    trap 'rm -f "$def_only" "$fail_log"' EXIT
+    pass=0; fail=0
+    while IFS= read -r fx; do
+      rel="${fx#"$fixtures_dir"/}"
+      jq '.definition' "$fx" > "$def_only"
+      n_cases=$(jq -r '.cases | length' "$fx")
+      for i in $(seq 0 $((n_cases - 1))); do
+        id=$(jq -r --argjson i "$i" '.cases[$i].id' "$fx")
+        args=()
+        path=$(jq -c --argjson i "$i" '.cases[$i].path' "$fx")
+        if [[ "$path" != "null" ]]; then args+=(--path "$path"); fi
+        depth=$(jq -r --argjson i "$i" '.cases[$i].depth // empty' "$fx")
+        if [[ -n "$depth" ]]; then args+=(--depth "$depth"); fi
+        cmode=$(jq -c --argjson i "$i" '.cases[$i].category_mode // empty' "$fx")
+        if [[ -n "$cmode" ]]; then
+          if jq -e 'type == "object"' <<<"$cmode" >/dev/null; then
+            args+=(--category-mode "named:$(jq -r '.named' <<<"$cmode")")
+          else
+            args+=(--category-mode "$(jq -r . <<<"$cmode")")
+          fi
+        fi
+        set +e
+        out=$("$bin" help "$def_only" "${args[@]}" 2>/dev/null)
+        set -e
+        if ! jq -e . <<<"$out" >/dev/null 2>&1; then
+          fail=$((fail + 1))
+          printf "FAIL %s :: %s (no JSON output, args: %s)\n" "$rel" "$id" "${args[*]}" >> "$fail_log"
+          continue
+        fi
+        # -S でキー順正規化 + walk(.+0) で number 表現差 (-1.0 vs -1) を吸収し、
+        # expect オブジェクト全体を構造等価比較する (conformance recipe の errors/
+        # interpretations 別正規化と違い、help fixture は 1 object 丸ごと比較で足りる —
+        # 25 case とも array フィールドの列挙順は宣言順のまま規範、集合比較が要る field なし)
+        want=$(jq -cS --argjson i "$i" '.cases[$i].expect | walk(if type=="number" then .+0 else . end)' "$fx")
+        got=$(jq -cS 'walk(if type=="number" then .+0 else . end)' <<<"$out")
+        if [[ "$got" == "$want" ]]; then
+          pass=$((pass + 1))
+        else
+          fail=$((fail + 1))
+          printf "FAIL %s :: %s (got=%s want=%s)\n" "$rel" "$id" "$got" "$want" >> "$fail_log"
+        fi
+      done
+    done < <(find "$fixtures_dir" -name '*.json' | sort)
+    total=$((pass + fail))
+    echo "──── help conformance (fixtures/help/*.json) ────"
+    if [[ -s "$fail_log" ]]; then cat "$fail_log"; fi
+    printf "help-conformance: %d/%d cases pass (%d fail)\n" "$pass" "$total" "$fail"
+    # 回帰 gate: pass 数が baseline を割ったら red。baseline は fail の解消に合わせて
+    # **手動**で上げる (conformance recipe と同じ ratchet 方針)。現 baseline は
+    # fixtures/help/*.json 全 25 case が green の状態。
+    baseline=25
+    if [[ "$pass" -lt "$baseline" ]]; then
+      printf >&2 "help-conformance REGRESSION: pass=%d fell below baseline=%d\n" "$pass" "$baseline"
+      exit 1
+    fi

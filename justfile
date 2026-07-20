@@ -39,6 +39,10 @@ impl-mbt-test:
 impl-mbt-conformance:
     cd impl/mbt && just conformance
 
+# help conformance gate (fixtures/help/*.json 25 case、恒常 green gate。詳細は impl/mbt/justfile の help-conformance)
+impl-mbt-help-conformance:
+    cd impl/mbt && just help-conformance
+
 # ---------- push flow (bump-semver canonical 模倣) ----------
 
 # working copy is clean (= 未コミット変更を巻き込ませない)

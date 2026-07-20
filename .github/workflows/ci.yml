@@ -58,3 +58,8 @@ jobs:
         env:
           KUU_FIXTURES: ${{ github.workspace }}/_kuu-spec/fixtures
         run: just impl-mbt-conformance
+
+      - name: Help conformance (regression gate)
+        env:
+          KUU_FIXTURES: ${{ github.workspace }}/_kuu-spec/fixtures
+        run: just impl-mbt-help-conformance
