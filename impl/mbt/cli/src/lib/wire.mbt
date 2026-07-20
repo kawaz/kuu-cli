@@ -179,6 +179,58 @@ pub fn cmd_help(
 }
 
 ///|
+/// `kuu help --format text` の実行本体。`cmd_help` と同じ dispatch 経路で HelpModel を取得し、
+/// canonical レンダラ (DR-115) を通してテキストを stdout 出力する。エラー envelope (definition-error
+/// / query-error / malformed) は JSON 版と同一の形で stdout に出す (人間向け text 出力に混ぜず、
+/// エラーは machine parse 可能な形を維持する — machine tail / lint との組合せで扱いやすい)。
+pub fn cmd_help_text(
+  def_text : String,
+  path : Array[String],
+  depth : @kuu.HelpDepth,
+  category_mode : @kuu.HelpCategoryMode,
+  render_opts : RenderOpts,
+) -> CmdResult {
+  let defj = @json.parse(def_text) catch {
+    _ =>
+      return {
+        json: error_json(
+          "malformed_definition_json", "definition text is not valid JSON",
+        ),
+        exit: 2,
+      }
+  }
+  let registry = @engine.Registry::new()
+  @kuu.install_canonical(registry)
+  match @kuu.parse_definition(defj, extensions=registry) {
+    Err(@kuu.Malformed(reason)) =>
+      { json: error_json("malformed_definition", reason), exit: 1 }
+    Err(@kuu.Rejected(errs)) =>
+      { json: def_errors_help_envelope(errs).stringify(indent=2), exit: 1 }
+    Ok(ast) =>
+      match
+        @kuu.dispatch_help_query(
+          registry,
+          ast,
+          path~,
+          depth~,
+          category_mode~,
+        ) {
+        @kuu.Unavailable =>
+          {
+            json: error_json(
+              "help_query_not_registered",
+              "help_query capability is not registered in the active assembly",
+            ),
+            exit: 2,
+          }
+        @kuu.QueryError(err) =>
+          { json: help_query_error_json(err).stringify(indent=2), exit: 1 }
+        @kuu.Model(model) => { json: render_help(model, render_opts), exit: 0 }
+      }
+  }
+}
+
+///|
 /// `kuu validate <def_json_text>`: decode + lowering only; report definition errors.
 /// Emits `{"ok":true}` (exit 0) or `{"ok":false,"errors":[...]}` (exit 1). Exit 2 on
 /// malformed JSON.

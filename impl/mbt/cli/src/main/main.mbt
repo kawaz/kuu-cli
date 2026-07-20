@@ -457,7 +457,7 @@ fn run_complete(args : Array[String]) -> @lib.CmdResult {
 
 ///|
 /// help subcommand の usage (エラー時 stderr 表示の共通素材)。
-const HELP_USAGE : String = "kuu help [<def.json>] [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>]"
+const HELP_USAGE : String = "kuu help [<def.json>] [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>] [--format text|json] [--binding name=value]... [--show-hidden] [--program-name <name>] [--style-value-structure auto|inline|detail] [--style-types auto|aggregate|inline] [--style-origin merge|separate_section|reference|omit] [--style-template <string>]"
 
 ///|
 /// `kuu help <def.json> [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>]`
@@ -478,6 +478,17 @@ fn run_help(args : Array[String]) -> @lib.CmdResult {
   let mut path : Array[String] = []
   let mut depth : @kuu.HelpDepth = @kuu.Scope
   let mut category_mode : @kuu.HelpCategoryMode = @kuu.Default
+  // DR-115 render options — --format text で canonical レンダラのテキスト出力に切替、既定 json は
+  // 現行の canonical JSON model 出力を維持 (help-conformance gate が JSON を前提としているため、
+  // 既定切替は kawaz 裁定待ち = 完了報告の 👺 候補)。
+  let mut format : String = "json"
+  let mut show_hidden : Bool = false
+  let mut program_name_opt : String? = None
+  let bindings : Map[String, String] = Map([])
+  let mut style_template : String? = None
+  let mut style_vs : String? = None
+  let mut style_types : String? = None
+  let mut style_origin : String? = None
   let mut i = 1
   while i < args.length() {
     let a = args[i]
@@ -504,11 +515,65 @@ fn run_help(args : Array[String]) -> @lib.CmdResult {
         Err(msg) => usage_die("kuu help: --category-mode " + msg, HELP_USAGE)
       }
       i = i + 2
+    } else if a == "--format" && i + 1 < args.length() {
+      let v = args[i + 1]
+      if v != "text" && v != "json" {
+        usage_die(
+          "kuu help: --format expects 'text' or 'json', got '" + v + "'",
+          HELP_USAGE,
+        )
+      }
+      format = v
+      i = i + 2
+    } else if a == "--show-hidden" {
+      show_hidden = true
+      i = i + 1
+    } else if a == "--program-name" && i + 1 < args.length() {
+      program_name_opt = Some(args[i + 1])
+      i = i + 2
+    } else if a == "--binding" && i + 1 < args.length() {
+      match split_once(args[i + 1], '=') {
+        Some(pair) => bindings.set(pair.0, pair.1)
+        None =>
+          usage_die(
+            "kuu help: --binding expects name=value, got '" + args[i + 1] + "'",
+            HELP_USAGE,
+          )
+      }
+      i = i + 2
+    } else if a == "--style-template" && i + 1 < args.length() {
+      style_template = Some(args[i + 1])
+      i = i + 2
+    } else if a == "--style-value-structure" && i + 1 < args.length() {
+      style_vs = Some(args[i + 1])
+      i = i + 2
+    } else if a == "--style-types" && i + 1 < args.length() {
+      style_types = Some(args[i + 1])
+      i = i + 2
+    } else if a == "--style-origin" && i + 1 < args.length() {
+      style_origin = Some(args[i + 1])
+      i = i + 2
     } else {
       usage_die("kuu help: unexpected arg '" + a + "'", HELP_USAGE)
     }
   }
-  @lib.cmd_help(def_text, path, depth, category_mode)
+  if format == "text" {
+    let render_opts : @lib.RenderOpts = {
+      program_name: program_name_opt,
+      show_hidden,
+      bindings,
+      style: {
+        template: style_template,
+        value_structure_style: style_vs,
+        types_style: style_types,
+        origin_style: style_origin,
+      },
+      category_mode,
+    }
+    @lib.cmd_help_text(def_text, path, depth, category_mode, render_opts)
+  } else {
+    @lib.cmd_help(def_text, path, depth, category_mode)
+  }
 }
 
 ///|
@@ -618,11 +683,18 @@ fn usage_text() -> String {
     #|
     #|  Note: --no-config / --config / --config-file are mutually exclusive.
     #|
-    #|help options (DR-113 help_query capability; canonical JSON model output — human rendering is separate):
-    #|  --path <json-array>  root-first command path (default []); e.g. '["remote","add"]'
-    #|  --depth scope|all    'scope' (default) = selected scope only; 'all' = recursively embed subscopes
-    #|  --category-mode ...  'default' (default) | 'all' | 'named:<name>' (DR-113 §1 3-way; default/all
-    #|                       share the same model material, named filters to entries in that group)
+    #|help options (DR-113 help_query capability + DR-115 canonical renderer):
+    #|  --path <json-array>          root-first command path (default []); e.g. '["remote","add"]'
+    #|  --depth scope|all            'scope' (default) = selected scope only; 'all' = recursively embed subscopes
+    #|  --category-mode ...          'default' (default) | 'all' | 'named:<name>'
+    #|  --format text|json           output format (default 'json' = canonical model wire; 'text' = DR-115 renderer)
+    #|  --show-hidden                include hidden entries (entry-level; group hidden is untouched, DR-115 §4)
+    #|  --program-name <name>        override program name shown in Usage: (default = command_path[0])
+    #|  --binding name=value         supply a binding for {name} interpolation (repeatable, DR-115 §3)
+    #|  --style-value-structure ...  auto|inline|detail (DR-115 §5.1)
+    #|  --style-types ...            auto|aggregate|inline (DR-115 §5.2)
+    #|  --style-origin ...           merge|separate_section|reference|omit (DR-115 §5.3)
+    #|  --style-template <string>    override the section skeleton template (DR-115 §2)
     #|
     #|  Note: 'kuu help' with no arguments prints this usage; provide <def.json> to run a help query.
     #|
