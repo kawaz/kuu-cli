@@ -476,8 +476,8 @@ fn run_help(args : Array[String]) -> @lib.CmdResult {
     Err(msg) => usage_die("kuu help: " + msg, HELP_USAGE)
   }
   let mut path : Array[String] = []
-  let mut depth : @kuu.HelpDepth = @kuu.DScope
-  let mut category_mode : @kuu.HelpCategoryMode = @kuu.HCMDefault
+  let mut depth : @kuu.HelpDepth = @kuu.Scope
+  let mut category_mode : @kuu.HelpCategoryMode = @kuu.Default
   let mut i = 1
   while i < args.length() {
     let a = args[i]
@@ -489,8 +489,8 @@ fn run_help(args : Array[String]) -> @lib.CmdResult {
       i = i + 2
     } else if a == "--depth" && i + 1 < args.length() {
       depth = match args[i + 1] {
-        "scope" => @kuu.DScope
-        "all" => @kuu.DAll
+        "scope" => @kuu.Scope
+        "all" => @kuu.All
         other =>
           usage_die(
             "kuu help: --depth expects 'scope' or 'all', got '" + other + "'",
@@ -517,15 +517,15 @@ fn run_help(args : Array[String]) -> @lib.CmdResult {
 /// 認めない — schema `named` 参照)。
 fn parse_category_mode(s : String) -> Result[@kuu.HelpCategoryMode, String] {
   if s == "default" {
-    Ok(@kuu.HCMDefault)
+    Ok(@kuu.Default)
   } else if s == "all" {
-    Ok(@kuu.HCMAll)
+    Ok(@kuu.All)
   } else if s.length() >= 6 && s[0:6].to_owned() == "named:" {
     let name = s[6:].to_owned()
     if name == "" {
       Err("'named:' requires a non-empty name")
     } else {
-      Ok(@kuu.HCMNamed(name))
+      Ok(@kuu.Named(name))
     }
   } else {
     Err("expects 'default' | 'all' | 'named:<name>', got '" + s + "'")

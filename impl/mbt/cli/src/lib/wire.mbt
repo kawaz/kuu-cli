@@ -139,9 +139,9 @@ pub fn cmd_help(
         exit: 2,
       }
   }
-  // capability lookup 経路のため extensions を明示ビルドする (canonical と同じ = @kuu.install)。
+  // capability lookup 経路のため extensions を明示ビルドする (canonical と同じ = @kuu.install_canonical)。
   let registry = @engine.Registry::new()
-  @kuu.install(registry)
+  @kuu.install_canonical(registry)
   match @kuu.parse_definition(defj, extensions=registry) {
     Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
@@ -162,7 +162,7 @@ pub fn cmd_help(
           depth~,
           category_mode~,
         ) {
-        None =>
+        @kuu.Unavailable =>
           {
             json: error_json(
               "help_query_not_registered",
@@ -170,9 +170,9 @@ pub fn cmd_help(
             ),
             exit: 2,
           }
-        Some(Err(err)) =>
+        @kuu.QueryError(err) =>
           { json: help_query_error_json(err).stringify(indent=2), exit: 1 }
-        Some(Ok(model)) =>
+        @kuu.Model(model) =>
           { json: help_model_json(model).stringify(indent=2), exit: 0 }
       }
   }
@@ -250,7 +250,7 @@ fn outcome_to_json(
           // 集約済み (旧 `@kuu.is_sentinel` + 手組み `is_excluded_cell` の重複実装を解消)。
           // effects は parse 段の生 binds (`pbinds`)、result / sources は resolve 済み binds
           // (`rbinds`) から組む — 相区分は変えない (DR-045 §1 / DR-109 §5-§7 と同じ素材の対応)。
-          let view = @kuu.output(ast, pbinds, resolved=rbinds)
+          let view = @kuu.output(ast, effects=pbinds, resolved=rbinds)
           let effects = output_effects_to_json(view.effects)
           let result = rval_to_json(view.result)
           let sources = source_entries_to_json(view.sources)
@@ -375,10 +375,13 @@ fn failure_to_json(d : @engine.FailureData, po : @engine.Outcome) -> Json {
 fn warnings_to_json(ws : Array[@engine.Warning]) -> Json {
   let arr : Array[Json] = []
   for w in ws {
+    let kind = match w.kind {
+      @engine.Deprecated => "deprecated"
+    }
     arr.push(
       Json::object({
         "element": Json::string(w.element),
-        "kind": Json::string(w.kind),
+        "kind": Json::string(kind),
       }),
     )
   }
@@ -427,15 +430,15 @@ fn output_effects_to_json(effects : Array[@kuu.OutputEffect]) -> Json {
 ///|
 fn rval_to_json(r : @engine.RVal) -> Json {
   match r {
-    @engine.RScalar(v) => value_to_json(v)
-    @engine.RArr(xs) => {
+    @engine.Scalar(v) => value_to_json(v)
+    @engine.Array(xs) => {
       let arr : Array[Json] = []
       for x in xs {
         arr.push(rval_to_json(x))
       }
       Json::array(arr)
     }
-    @engine.RObj(kv) => {
+    @engine.Object(kv) => {
       let pairs : Array[(String, Json)] = []
       for kv2 in kv {
         pairs.push((kv2.0, rval_to_json(kv2.1)))
@@ -448,14 +451,14 @@ fn rval_to_json(r : @engine.RVal) -> Json {
 ///|
 fn value_to_json(v : @engine.Value) -> Json {
   match v {
-    @engine.VStr(s) => Json::string(s)
-    @engine.VBool(b) => Json::boolean(b)
+    @engine.String(s) => Json::string(s)
+    @engine.Bool(b) => Json::boolean(b)
     // DR-092 §1/§2: JSON に inf リテラルは無いため、float 値位置の無限大は
     // protobuf3 準拠の文字列 sentinel ("Infinity" / "-Infinity") で表現する。
     // NaN は DR-074 で parse 段 Reject 済み (両型 Error) のためここに到達しない。
-    @engine.VNum(d) if d.is_pos_inf() => Json::string("Infinity")
-    @engine.VNum(d) if d.is_neg_inf() => Json::string("-Infinity")
-    @engine.VNum(d) => Json::number(d)
+    @engine.Number(d) if d.is_pos_inf() => Json::string("Infinity")
+    @engine.Number(d) if d.is_neg_inf() => Json::string("-Infinity")
+    @engine.Number(d) => Json::number(d)
   }
 }
 
@@ -578,23 +581,23 @@ fn source_str(s : @engine.Source) -> String {
 ///|
 fn errkind_str(k : @engine.ErrKind) -> String {
   match k {
-    @engine.KParse => "parse"
-    @engine.KFilter => "filter"
-    @engine.KConstraint => "constraint"
+    @engine.Parse => "parse"
+    @engine.Filter => "filter"
+    @engine.Constraint => "constraint"
   }
 }
 
 ///|
 fn deferr_kind_str(k : @engine.DefErrKind) -> String {
   match k {
-    @engine.DVocabIntersection => "vocab-intersection"
-    @engine.DUnknownVocab => "unknown-vocab"
-    @engine.DInvalidRange => "invalid-range"
-    @engine.DAbsentRef => "absent-ref"
-    @engine.DCircularRef => "circular-ref"
-    @engine.DZeroProgress => "zero-progress"
-    @engine.DConfigCycle => "config-cycle"
-    @engine.DInvalidArgument => "invalid-argument"
+    @engine.VocabIntersection => "vocab-intersection"
+    @engine.UnknownVocab => "unknown-vocab"
+    @engine.InvalidRange => "invalid-range"
+    @engine.AbsentRef => "absent-ref"
+    @engine.CircularRef => "circular-ref"
+    @engine.ZeroProgress => "zero-progress"
+    @engine.ConfigCycle => "config-cycle"
+    @engine.InvalidArgument => "invalid-argument"
   }
 }
 
@@ -620,8 +623,8 @@ fn term_str(t : @engine.TermHint) -> String {
 /// `{"outcome":"query-error","errors":[{"kind":"absent-path"}]}` の形式。
 fn help_query_error_json(err : @kuu.HelpQueryError) -> Json {
   let kind = match err {
-    @kuu.HQAbsentPath => "absent-path"
-    @kuu.HQAbsentCategory => "absent-category"
+    @kuu.AbsentPath => "absent-path"
+    @kuu.AbsentCategory => "absent-category"
   }
   Json::object({
     "outcome": Json::string("query-error"),
@@ -792,7 +795,7 @@ fn help_positional_json(p : @kuu.HelpPositional) -> Json {
 ///|
 fn help_option_entry_json(entry : @kuu.HelpOptionEntry) -> Json {
   match entry {
-    @kuu.HGroup(g) => {
+    @kuu.Group(g) => {
       let group_obj : Map[String, Json] = Map([])
       group_obj.set("name", Json::string(g.name))
       match g.title {
@@ -805,7 +808,7 @@ fn help_option_entry_json(entry : @kuu.HelpOptionEntry) -> Json {
       }
       Json::object({ "group": Json::object(group_obj) })
     }
-    @kuu.HOption(o) => help_option_json(o)
+    @kuu.Option(o) => help_option_json(o)
   }
 }
 
@@ -836,7 +839,7 @@ fn help_option_json(o : @kuu.HelpOption) -> Json {
     Some(v) => object.set("help_group_name", Json::string(v))
     None => ()
   }
-  match o.default_ {
+  match o.default {
     Some(v) => object.set("default", help_default_json(v))
     None => ()
   }
@@ -861,18 +864,18 @@ fn help_option_json(o : @kuu.HelpOption) -> Json {
 ///|
 fn help_origin_json(origin : @kuu.HelpOrigin) -> Json {
   match origin {
-    @kuu.HOLocal => Json::string("local")
-    @kuu.HOGlobal(declared_at) =>
+    @kuu.Local => Json::string("local")
+    @kuu.Global(declared_at) =>
       Json::object({
         "kind": Json::string("global"),
         "declared_at": strs_to_json(declared_at),
       })
-    @kuu.HOInheritable(declared_at) =>
+    @kuu.Inheritable(declared_at) =>
       Json::object({
         "kind": Json::string("inheritable"),
         "declared_at": strs_to_json(declared_at),
       })
-    @kuu.HOAlias(of) =>
+    @kuu.Alias(of) =>
       Json::object({
         "kind": Json::string("alias"),
         "of": Json::string(of),
@@ -883,8 +886,8 @@ fn help_origin_json(origin : @kuu.HelpOrigin) -> Json {
 ///|
 fn help_default_json(v : @kuu.HelpDefault) -> Json {
   match v {
-    @kuu.HDefaultScalar(scalar) => help_value_json(scalar)
-    @kuu.HDefaultArray(values) => {
+    @kuu.Scalar(scalar) => help_value_json(scalar)
+    @kuu.Array(values) => {
       let arr : Array[Json] = []
       for item in values {
         arr.push(help_value_json(item))
@@ -900,22 +903,22 @@ fn help_default_json(v : @kuu.HelpDefault) -> Json {
 /// ±∞ は spec 上 help_default に現れない (DR-113 §4)。
 fn help_value_json(v : @engine.Value) -> Json {
   match v {
-    @engine.VStr(s) => Json::string(s)
-    @engine.VBool(b) => Json::boolean(b)
-    @engine.VNum(d) => Json::number(d)
+    @engine.String(s) => Json::string(s)
+    @engine.Bool(b) => Json::boolean(b)
+    @engine.Number(d) => Json::number(d)
   }
 }
 
 ///|
 fn help_value_structure_json(vs : @engine.HelpValueStructure) -> Json {
   match vs {
-    @engine.HVSingle(single) => {
+    @engine.Single(single) => {
       let inner : Map[String, Json] = Map([])
       match single.value_name {
         Some(v) => inner.set("value_name", Json::string(v))
         None => ()
       }
-      match single.type_ {
+      match single.value_type {
         Some(t) => inner.set("type", Json::string(t))
         None => ()
       }
@@ -925,21 +928,21 @@ fn help_value_structure_json(vs : @engine.HelpValueStructure) -> Json {
       }
       Json::object({ "single": Json::object(inner) })
     }
-    @engine.HVSeq(nodes) => {
+    @engine.Seq(nodes) => {
       let arr : Array[Json] = []
       for n in nodes {
         arr.push(help_value_structure_json(n))
       }
       Json::object({ "seq": Json::array(arr) })
     }
-    @engine.HVOr(nodes) => {
+    @engine.Or(nodes) => {
       let arr : Array[Json] = []
       for n in nodes {
         arr.push(help_value_structure_json(n))
       }
       Json::object({ "or": Json::array(arr) })
     }
-    @engine.HVRepeat(spec) => {
+    @engine.Repeat(spec) => {
       let inner : Map[String, Json] = Map([])
       match spec.min {
         Some(m) => inner.set("min", Json::number(m.to_double()))
@@ -952,7 +955,7 @@ fn help_value_structure_json(vs : @engine.HelpValueStructure) -> Json {
       inner.set("node", help_value_structure_json(spec.node))
       Json::object({ "repeat": Json::object(inner) })
     }
-    @engine.HVTypeRef(ref_) => {
+    @engine.TypeRef(ref_) => {
       let out : Map[String, Json] = Map([])
       out.set("type_ref", Json::string(ref_.id))
       match ref_.value_name {
