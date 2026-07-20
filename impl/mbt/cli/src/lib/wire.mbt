@@ -579,16 +579,16 @@ fn source_str(s : @engine.Source) -> String {
 }
 
 ///|
-fn errkind_str(k : @engine.ErrKind) -> String {
+fn errkind_str(k : @engine.ErrorKind) -> String {
   match k {
-    @engine.Parse => "parse"
-    @engine.Filter => "filter"
-    @engine.Constraint => "constraint"
+    @engine.ErrorKind::Parse => "parse"
+    @engine.ErrorKind::Filter => "filter"
+    @engine.ErrorKind::Constraint => "constraint"
   }
 }
 
 ///|
-fn deferr_kind_str(k : @engine.DefErrKind) -> String {
+fn deferr_kind_str(k : @engine.DefErrorKind) -> String {
   match k {
     @engine.VocabIntersection => "vocab-intersection"
     @engine.UnknownVocab => "unknown-vocab"
