@@ -148,7 +148,7 @@ test "cmd_complete emits exact trigger candidate --port" {
       saw = true
       // DR-104 §2 明確化 (a): exact triggers require `origin`.
       inspect(jstr(jkey(c, "origin")), content="port")
-      // DR-104 §2 meta is required (`Cand.meta` direct projection).
+      // DR-104 §2 meta is required (wire projection of `Candidate.is_alias`/`.hidden`/`.deprecated`).
       let meta = jkey(c, "meta")
       inspect(jbool(jkey(meta, "is_alias")), content="false")
       inspect(jbool(jkey(meta, "hidden")), content="false")

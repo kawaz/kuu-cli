@@ -428,17 +428,17 @@ fn output_effects_to_json(effects : Array[@kuu.OutputEffect]) -> Json {
 }
 
 ///|
-fn rval_to_json(r : @engine.RVal) -> Json {
+fn rval_to_json(r : @engine.ResultValue) -> Json {
   match r {
-    @engine.Scalar(v) => value_to_json(v)
-    @engine.Array(xs) => {
+    @engine.ResultValue::Scalar(v) => value_to_json(v)
+    @engine.ResultValue::Array(xs) => {
       let arr : Array[Json] = []
       for x in xs {
         arr.push(rval_to_json(x))
       }
       Json::array(arr)
     }
-    @engine.Object(kv) => {
+    @engine.ResultValue::Object(kv) => {
       let pairs : Array[(String, Json)] = []
       for kv2 in kv {
         pairs.push((kv2.0, rval_to_json(kv2.1)))
@@ -520,7 +520,7 @@ fn strs_to_json(xs : Array[String]) -> Json {
 // ═════════════════════════════════════════════════════════════════════════════
 
 ///|
-fn cand_to_json(c : @engine.Cand) -> Json {
+fn cand_to_json(c : @engine.Candidate) -> Json {
   let fields : Array[(String, Json)] = []
   // spelling: required for exact triggers; omitted (equivalent to "") for value positions.
   if !c.is_value {
@@ -536,9 +536,9 @@ fn cand_to_json(c : @engine.Cand) -> Json {
     (
       "meta",
       Json::object({
-        "is_alias": Json::boolean(c.meta.is_alias),
-        "hidden": Json::boolean(c.meta.hidden),
-        "deprecated": Json::boolean(c.meta.deprecated),
+        "is_alias": Json::boolean(c.is_alias),
+        "hidden": Json::boolean(c.hidden),
+        "deprecated": Json::boolean(c.deprecated),
       }),
     ),
   )
@@ -605,7 +605,7 @@ fn deferr_kind_str(k : @engine.DefErrKind) -> String {
 fn term_str(t : @engine.TermHint) -> String {
   match t {
     @engine.WordEnd => "word_end"
-    @engine.Cont => "cont"
+    @engine.Continue => "cont"
   }
 }
 
