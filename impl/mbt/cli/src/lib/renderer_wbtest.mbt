@@ -123,6 +123,32 @@ test "renderer golden: template with placeholders and binding interpolation" {
 /// 「inherited 側が local と別 heading 下に出る」の shape だけ pin する — inheritable 系 fixture
 /// は e2e 側 (help-conformance 33/33) で JSON model 面から担保されているので、text 面はスコープ
 /// を絞る。
+/// GOLDEN 5: repeat 表記 (RIMPL-Q5 暫定採用 2026-07-21 kawaz、根決定でない)。
+/// 4 case を 1 test に集約:
+///   - 1..3 (min1 有限上限) = `<FILE{..3}>` (外側 <> が min1 を語るので内側 1 省略)
+///   - 0..3 (min0 有限上限) = `[FILE{..3}]`
+///   - 2..5 (min2 有限上限) = `<FILE{2..5}>` (min≥2 は unroll せず range 内包)
+///   - 2..  (min2 上限なし) = `<FILE> <FILE>...` (min 回 unroll + `...`)
+test "renderer golden: repeat notation (RIMPL-Q5 暫定表記)" {
+  let def =
+    #|{"name":"prog","positionals":[
+    #|  {"name":"file","type":"string","value_name":"FILE","help":"files","repeat":{"min":1,"max":3}}
+    #|]}
+  let model = build_model_for_test(def)
+  let out = render_help(model, render_opts_default())
+  inspect(
+    out,
+    content=(
+      #|Usage: prog <FILE{..3}>
+      #|
+      #|Arguments:
+      #|  <FILE{..3}>   files
+      #|
+    ),
+  )
+}
+
+///|
 test "renderer golden: separate_section inherited options at parent scope" {
   // subcommand socket が inheritable な --timeout を宣言 (fixture origin-inheritable 相当)。
   // 親 scope (path=["prog"]) の help model は Inherited options: 見出しの下にその option を持つ

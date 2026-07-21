@@ -1044,11 +1044,7 @@ fn value_structure_inline(vs : @engine.HelpValueStructure) -> String {
       }
       "<" + join_strings(parts, " | ") + ">"
     }
-    @engine.Repeat(spec) => {
-      let inner = value_structure_inline(spec.node)
-      let bound = repeat_bound_suffix(spec.min, spec.max)
-      inner + bound
-    }
+    @engine.Repeat(spec) => render_repeat(spec)
     @engine.TypeRef(ref_) => {
       let vn = ref_.value_name.unwrap_or(ref_.id)
       "<" + vn + ">"
@@ -1057,12 +1053,77 @@ fn value_structure_inline(vs : @engine.HelpValueStructure) -> String {
 }
 
 ///|
-fn repeat_bound_suffix(min : Int?, max : Int?) -> String {
-  match (min, max) {
-    (Some(mi), Some(ma)) => "{" + mi.to_string() + ".." + ma.to_string() + "}"
-    (Some(mi), None) => "{" + mi.to_string() + "..}"
-    (None, Some(ma)) => "{.." + ma.to_string() + "}"
-    (None, None) => "..."
+/// Repeat の表記 (**暫定採用 2026-07-21 kawaz、根決定でない**、RIMPL-Q5)。
+///
+/// 現行規則:
+///   - optional 単発: `[FILE]` / required 単発: `<FILE>` (外側ブラケットが min の 0/1 境界を担う)
+///   - 上限なし: min 回 unroll + `...`
+///       min0 = `[FILE]...` / min1 = `<FILE>...` / min2 = `<FILE> <FILE>...`
+///   - 有限上限: `{..n}` / `{m..n}` を**内側**に内包
+///       0..3 = `[FILE{..3}]` / 1..3 = `<FILE{..3}>` (外側 <> が min1 を語るので 1 省略)
+///       2..5 = `<FILE{2..5}>` (min≥2 の有限上限は unroll せず range 内包一発)
+///   - 冗長な数字は省略 (0..n / 1..n は内側から min を落とす)
+///
+/// 内側 node が Single 以外 (Or / Seq / TypeRef ネスト) は現状 fixture に corpus 無し。
+/// 安全に fallback (旧: `inner + {m..n}` 外付け) で受ける — 表記確定時に見直す (kawaz 裁定待ち)。
+fn render_repeat(spec : @engine.HelpRepeatSpec) -> String {
+  let min_v = spec.min.unwrap_or(0)
+  // core name: Single の value_name (or "VALUE")。Single 以外は fallback へ。
+  match spec.node {
+    @engine.Single(sv) => {
+      let vn = sv.value_name.unwrap_or("VALUE")
+      render_repeat_with_core(vn, min_v, spec.max)
+    }
+    _ => {
+      // fallback: 外付け suffix (旧表記)
+      let inner = value_structure_inline(spec.node)
+      inner + fallback_repeat_suffix(min_v, spec.max)
+    }
+  }
+}
+
+///|
+/// core value name (裸文字、ブラケットなし) を受け、min / max から新表記を組む。
+fn render_repeat_with_core(vn : String, min_v : Int, max : Int?) -> String {
+  match max {
+    None =>
+      // 上限なし: min 回 unroll + `...`
+      if min_v <= 0 {
+        "[" + vn + "]..."
+      } else {
+        let out = StringBuilder::new()
+        let mut i = 0
+        while i < min_v {
+          if i > 0 {
+            out.write_char(' ')
+          }
+          out.write_char('<')
+          out.write_string(vn)
+          out.write_char('>')
+          i = i + 1
+        }
+        out.write_string("...")
+        out.to_string()
+      }
+    Some(ma) =>
+      // 有限上限: 内側 `{..n}` / `{m..n}` を内包
+      if min_v <= 0 {
+        "[" + vn + "{.." + ma.to_string() + "}]"
+      } else if min_v == 1 {
+        "<" + vn + "{.." + ma.to_string() + "}>"
+      } else {
+        "<" + vn + "{" + min_v.to_string() + ".." + ma.to_string() + "}>"
+      }
+  }
+}
+
+///|
+/// Single 以外 (複合 node) を Repeat で包む場合の fallback suffix。新表記の内包規則を Single
+/// 以外へ広げる corpus が無いので旧表記 (外付け `{m..n}` / `...`) で保持する — kawaz 裁定待ち。
+fn fallback_repeat_suffix(min_v : Int, max : Int?) -> String {
+  match max {
+    None => if min_v <= 1 { "..." } else { "{" + min_v.to_string() + "..}" }
+    Some(ma) => "{" + min_v.to_string() + ".." + ma.to_string() + "}"
   }
 }
 
