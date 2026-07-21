@@ -581,7 +581,6 @@ fn split_by_origin(
 fn is_inherited_origin(o : @kuu.HelpOrigin) -> Bool {
   match o {
     @kuu.Local => false
-    @kuu.Alias(_) => false
     @kuu.Global(_) => true
     @kuu.Inheritable(_) => true
   }

@@ -971,11 +971,6 @@ fn help_origin_json(origin : @kuu.HelpOrigin) -> Json {
         "kind": Json::string("inheritable"),
         "declared_at": strs_to_json(declared_at),
       })
-    @kuu.Alias(of) =>
-      Json::object({
-        "kind": Json::string("alias"),
-        "of": Json::string(of),
-      })
   }
 }
 
