@@ -73,6 +73,7 @@ fn main {
   let result : @lib.CmdResult = match sub {
     "parse" => run_parse(rest)
     "complete" => run_complete(rest)
+    "completion" => run_completion(rest)
     "validate" => run_validate(rest)
     "help" => {
       // `kuu help` (no args) → CLI usage (GNU coreutils 慣習、明示的 help 要求は stdout)。
@@ -456,6 +457,163 @@ fn run_complete(args : Array[String]) -> @lib.CmdResult {
 }
 
 ///|
+/// completion subcommand の usage (エラー時 stderr 表示の共通素材、DR-117 §6 形態 B)。
+const COMPLETION_USAGE : String = "kuu completion generate <def.json> --shell zsh|bash|fish --binary <ref> --uuid <u> [--program-name <n>]\n       kuu completion query <def.json> [--cword <N>] -- <words...>"
+
+///|
+/// `kuu completion <generate|query>` の dispatch (DR-117 §6 形態 B、findings 2026-07-23 M4)。
+fn run_completion(args : Array[String]) -> @lib.CmdResult {
+  if args.length() == 0 {
+    usage_die("kuu completion: missing sub-subcommand", COMPLETION_USAGE)
+  }
+  let sub = args[0]
+  let rest : Array[String] = []
+  for i in 1..<args.length() {
+    rest.push(args[i])
+  }
+  match sub {
+    "generate" => run_completion_generate(rest)
+    "query" => run_completion_query(rest)
+    _ =>
+      usage_die(
+        "kuu completion: unknown sub-subcommand '" + sub + "'",
+        COMPLETION_USAGE,
+      )
+  }
+}
+
+///|
+/// `kuu completion generate <def.json> --shell <s> --binary <ref> --uuid <u> [--program-name <n>]`.
+/// binary / uuid は必須 (glue 焼き込みの 2 点、DR-117 §2.5)。UUID 採番は「library の外」(findings
+/// §3.2) — kuu-cli は乱数を持たないため呼び出し側 (人 or 呼び出し script) が `$(uuidgen)` 等で
+/// 生成して渡す。program_name の既定は def JSON top-level `name` (wire.mbt 側で解決)。
+fn run_completion_generate(args : Array[String]) -> @lib.CmdResult {
+  if args.length() == 0 {
+    usage_die("kuu completion generate: missing <def.json>", COMPLETION_USAGE)
+  }
+  let def_path = args[0]
+  let def_text = match read_file_all(def_path) {
+    Ok(s) => s
+    Err(msg) => usage_die("kuu completion generate: " + msg, COMPLETION_USAGE)
+  }
+  let mut shell : String = ""
+  let mut binary : String = ""
+  let mut uuid : String = ""
+  let mut program_name : String? = None
+  let mut i = 1
+  while i < args.length() {
+    let a = args[i]
+    if a == "--shell" && i + 1 < args.length() {
+      shell = args[i + 1]
+      i = i + 2
+    } else if a == "--binary" && i + 1 < args.length() {
+      binary = args[i + 1]
+      i = i + 2
+    } else if a == "--uuid" && i + 1 < args.length() {
+      uuid = args[i + 1]
+      i = i + 2
+    } else if a == "--program-name" && i + 1 < args.length() {
+      program_name = Some(args[i + 1])
+      i = i + 2
+    } else {
+      usage_die(
+        "kuu completion generate: unexpected arg '" + a + "'",
+        COMPLETION_USAGE,
+      )
+    }
+  }
+  if shell == "" {
+    usage_die("kuu completion generate: missing --shell", COMPLETION_USAGE)
+  }
+  if binary == "" {
+    usage_die("kuu completion generate: missing --binary", COMPLETION_USAGE)
+  }
+  if uuid == "" {
+    usage_die("kuu completion generate: missing --uuid", COMPLETION_USAGE)
+  }
+  @lib.cmd_completion_generate(def_text, shell, binary, uuid, program_name)
+}
+
+///|
+/// `kuu completion query <def.json> [--cword <N>] -- <words...>`.
+/// words は補完対象コマンド名を先頭に含む全量 (DR-117 §3.4)。cword 省略 / 負値 / 範囲外 =
+/// 行末補完縮退 (DR-117 §3.3、completion_query 内部で処理)。
+fn run_completion_query(args : Array[String]) -> @lib.CmdResult {
+  if args.length() == 0 {
+    usage_die("kuu completion query: missing <def.json>", COMPLETION_USAGE)
+  }
+  let def_path = args[0]
+  let def_text = match read_file_all(def_path) {
+    Ok(s) => s
+    Err(msg) => usage_die("kuu completion query: " + msg, COMPLETION_USAGE)
+  }
+  let mut cword : Int? = None
+  let words : Array[String] = []
+  let mut i = 1
+  let mut seen_dd = false
+  while i < args.length() {
+    let a = args[i]
+    if seen_dd {
+      words.push(a)
+      i = i + 1
+    } else if a == "--" {
+      seen_dd = true
+      i = i + 1
+    } else if a == "--cword" && i + 1 < args.length() {
+      let s = args[i + 1]
+      match parse_int_opt(s) {
+        Some(n) => cword = Some(n)
+        None =>
+          usage_die(
+            "kuu completion query: --cword expects an integer, got '" + s + "'",
+            COMPLETION_USAGE,
+          )
+      }
+      i = i + 2
+    } else {
+      // dd 前の非フラグ token = words の先頭 (以降は全て words)
+      words.push(a)
+      seen_dd = true
+      i = i + 1
+    }
+  }
+  @lib.cmd_completion_query(def_text, words, cword)
+}
+
+///|
+/// ASCII 10 進整数 parser (負値可)。空文字・非数字は None。overflow は約 214748364 以下で
+/// safe (Int の範囲、run_completion_query で cword に使う小さな値のみ想定)。
+fn parse_int_opt(s : String) -> Int? {
+  let arr = s.to_array()
+  if arr.length() == 0 {
+    return None
+  }
+  let mut i = 0
+  let mut neg = false
+  if arr[0] == '-' {
+    neg = true
+    i = 1
+    if arr.length() == 1 {
+      return None
+    }
+  }
+  let mut acc : Int = 0
+  while i < arr.length() {
+    let code = arr[i].to_int()
+    if code < '0'.to_int() || code > '9'.to_int() {
+      return None
+    }
+    let d = code - '0'.to_int()
+    if acc > 214748364 {
+      return None
+    }
+    acc = acc * 10 + d
+    i = i + 1
+  }
+  Some(if neg { -acc } else { acc })
+}
+
+///|
 /// help subcommand の usage (エラー時 stderr 表示の共通素材)。
 const HELP_USAGE : String = "kuu help [<def.json>] [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>] [--format text|json] [--binding name=value]... [--show-hidden] [--program-name <name>] [--style-value-structure auto|inline|detail] [--style-types auto|aggregate|inline] [--style-origin merge|separate_section|reference|omit] [--style-template <string>]"
 
@@ -665,10 +823,12 @@ fn usage_text() -> String {
     #|kuu — parse / complete / validate against a kuu definition (JSON in, JSON out).
     #|
     #|Usage:
-    #|  kuu parse    <def.json> [options] [--] <args...>
-    #|  kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]
-    #|  kuu validate <def.json>
-    #|  kuu help     [<def.json> [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>]]
+    #|  kuu parse       <def.json> [options] [--] <args...>
+    #|  kuu complete    <def.json> --args-before <json-array> [--args-after <json-array>]
+    #|  kuu completion  generate <def.json> --shell zsh|bash|fish --binary <ref> --uuid <u> [--program-name <n>]
+    #|  kuu completion  query    <def.json> [--cword <N>] -- <words...>
+    #|  kuu validate    <def.json>
+    #|  kuu help        [<def.json> [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>]]
     #|
     #|parse options (value-source control; default = the real environment, DR-109 §6):
     #|  --no-env             ignore real environment variables
@@ -697,6 +857,14 @@ fn usage_text() -> String {
     #|  --style-template <string>    override the section skeleton template (DR-115 §2)
     #|
     #|  Note: 'kuu help' with no arguments prints this usage; provide <def.json> to run a help query.
+    #|
+    #|completion options (DR-117 §6 形態 B; UUID / binary は呼び出し側注入 — findings §3.2):
+    #|  generate --shell zsh|bash|fish   target shell
+    #|  generate --binary <ref>           glue が問い合わせるバイナリ参照 (絶対パス or 名前)
+    #|  generate --uuid <u>               env × argv 二箇所一致トークン (`$(uuidgen)` 等)
+    #|  generate --program-name <n>       補完対象コマンド名 (default = def top-level `name`)
+    #|  query    --cword <N>              カーソル単語 index (0-origin、省略/範囲外 = 行末補完)
+    #|  query    -- <words...>            補完対象コマンド名を先頭に含む全量 words (DR-117 §3.4)
     #|
     #|Exit codes: 0=success, 1=parse/validate/help failure, 2=usage error.
     #|Output channels: machine JSON is on stdout; human text (usage / errors) is on stderr.

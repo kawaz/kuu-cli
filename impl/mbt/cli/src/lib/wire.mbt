@@ -155,18 +155,11 @@ pub fn cmd_help(
       { json: def_errors_help_envelope(errs).stringify(indent=2), exit: 1 }
     Ok(ast) =>
       match
-        @kuu.dispatch_help_query(
-          registry,
-          ast,
-          path~,
-          depth~,
-          category_mode~,
-        ) {
+        @kuu.dispatch_help_query(registry, ast, path~, depth~, category_mode~) {
         @kuu.Unavailable =>
           {
             json: error_json(
-              "help_query_not_registered",
-              "help_query capability is not registered in the active assembly",
+              "help_query_not_registered", "help_query capability is not registered in the active assembly",
             ),
             exit: 2,
           }
@@ -208,18 +201,11 @@ pub fn cmd_help_text(
       { json: def_errors_help_envelope(errs).stringify(indent=2), exit: 1 }
     Ok(ast) =>
       match
-        @kuu.dispatch_help_query(
-          registry,
-          ast,
-          path~,
-          depth~,
-          category_mode~,
-        ) {
+        @kuu.dispatch_help_query(registry, ast, path~, depth~, category_mode~) {
         @kuu.Unavailable =>
           {
             json: error_json(
-              "help_query_not_registered",
-              "help_query capability is not registered in the active assembly",
+              "help_query_not_registered", "help_query capability is not registered in the active assembly",
             ),
             exit: 2,
           }
@@ -232,8 +218,14 @@ pub fn cmd_help_text(
 
 ///|
 /// `kuu validate <def_json_text>`: decode + lowering only; report definition errors.
-/// Emits `{"ok":true}` (exit 0) or `{"ok":false,"errors":[...]}` (exit 1). Exit 2 on
-/// malformed JSON.
+/// Emits `{"ok":true,"completer_capabilities":[...]}` (exit 0) or
+/// `{"ok":false,"errors":[...]}` (exit 1). Exit 2 on malformed JSON.
+///
+/// `completer_capabilities` は DR-117 §6 の custom completer 縮退告知 (findings §1.2 UXL-Q1=a、
+/// M4 スコープ): 形態 B (kuu-cli standalone) では def.json に埋め込まれた custom completer
+/// クロージャを実行できないため、definition が要求する completer 名のうち **builtin (`files` /
+/// `dirs`、DR-117 §7) 以外** を機械可読に列挙する。呼び出し側 (人 / lint) は「この definition
+/// は kuu-cli 単体では補完不能」と判定できる。空配列 = 形態 B でも完全補完可能。
 pub fn cmd_validate(def_text : String) -> CmdResult {
   let defj = @json.parse(def_text) catch {
     _ =>
@@ -245,11 +237,24 @@ pub fn cmd_validate(def_text : String) -> CmdResult {
       }
   }
   match @kuu.parse_definition(defj) {
-    Ok(_) =>
-      {
-        json: Json::object({ "ok": Json::boolean(true) }).stringify(indent=2),
-        exit: 0,
+    Ok(_) => {
+      // walk raw def JSON to collect all `"completer": "<name>"` string values; filter out
+      // builtin residents (files / dirs). AST の内部 walk 経路は AtomicAST が pub(all) でない
+      // ため使えないが、`completer` キー綴りは spec wire.schema.json の正本語彙で安定している
+      // (DR-104 §2(d))、raw JSON 走査で v1 の告知目的には十分。
+      let completers : Array[String] = []
+      let seen : Map[String, Unit] = Map([])
+      collect_completer_names(defj, completers, seen)
+      let arr : Array[Json] = []
+      for name in completers {
+        arr.push(Json::string(name))
       }
+      let obj = Json::object({
+        "ok": Json::boolean(true),
+        "completer_capabilities": Json::array(arr),
+      })
+      { json: obj.stringify(indent=2), exit: 0 }
+    }
     Err(@kuu.Malformed(reason)) => {
       let obj = Json::object({
         "ok": Json::boolean(false),
@@ -1074,4 +1079,153 @@ fn error_json(kind : String, message : String) -> String {
       }),
     ]),
   }).stringify(indent=2)
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// SECTION 6 — completion subcommand (DR-117 §6 形態 B、findings 2026-07-23 M4)
+// ═════════════════════════════════════════════════════════════════════════════
+
+///|
+/// `kuu completion generate <def_json_text> --shell <s> --binary <ref> --uuid <u> [--program-name <n>]`:
+/// DR-117 §2 `completion_script` capability の形態 B 呼び出し (findings §1.2 UXL-Q1=a — glue
+/// テンプレ literal 置換の実体は kuu.mbt `generate_completion_script()`、本関数は def.json 読みと
+/// program_name 既定解決の薄い glue)。
+///
+/// - `program_name?`: None なら raw def JSON top-level の `"name"` string を既定として拾う
+///   (DR-113 §4.4 と同形の既定解決)。top-level `name` が無い / 非 string ならエラー exit 2。
+///   AtomicAST 内部の scope.name 経路は AST が pub(all) でないため CLI 層からは未到達、raw JSON
+///   から拾うのが v1 の pragmatic 解 (spec wire で `name` は definition ルート必須項)。
+/// - 出力: 成功時 glue script text (bare — JSON envelope で包まない、shell に直接 `eval $(...)` /
+///   `source <(...)` される消費者を想定)。失敗時は他 subcommand 同型の JSON envelope。
+/// - exit: 0=成功 / 1=definition-error / 2=malformed JSON, unsupported shell, missing program_name
+pub fn cmd_completion_generate(
+  def_text : String,
+  shell : String,
+  binary : String,
+  uuid : String,
+  program_name_override : String?,
+) -> CmdResult {
+  let defj = @json.parse(def_text) catch {
+    _ =>
+      return {
+        json: error_json(
+          "malformed_definition_json", "definition text is not valid JSON",
+        ),
+        exit: 2,
+      }
+  }
+  // parse_definition で受理性を担保 (definition-error は他 subcommand 同型の envelope で返す)。
+  match @kuu.parse_definition(defj) {
+    Err(@kuu.Malformed(reason)) =>
+      { json: error_json("malformed_definition", reason), exit: 1 }
+    Err(@kuu.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
+    Ok(_) => {
+      // program_name 既定 = def JSON top-level `name` (spec wire で必須)。
+      let program_name : String = match program_name_override {
+        Some(n) => n
+        None =>
+          match defj {
+            Object(o) =>
+              match o.get("name") {
+                Some(String(s)) => s
+                _ =>
+                  return {
+                    json: error_json(
+                      "missing_program_name", "definition has no top-level string 'name'; pass --program-name explicitly",
+                    ),
+                    exit: 2,
+                  }
+              }
+            _ =>
+              return {
+                json: error_json(
+                  "missing_program_name", "definition is not a JSON object; pass --program-name explicitly",
+                ),
+                exit: 2,
+              }
+          }
+      }
+      match @kuu.generate_completion_script(shell, program_name, binary, uuid) {
+        Ok(script) => { json: script, exit: 0 }
+        Err(@kuu.UnsupportedShell(sh)) =>
+          {
+            json: error_json(
+              "unsupported_shell",
+              "shell '" + sh + "' is not supported (expected zsh|bash|fish)",
+            ),
+            exit: 2,
+          }
+      }
+    }
+  }
+}
+
+///|
+/// `kuu completion query <def_json_text> [--cword <N>] -- <words...>`:
+/// DR-117 §5 `completion_query` capability の形態 B 呼び出し (findings §1.2 UXL-Q1=a — 行応答
+/// 組み立ての実体は kuu.mbt `completion_query()`、本関数は def.json 読みと registry 組みの glue)。
+///
+/// 出力: 成功時 DR-117 §4 の行指向応答テキストを stdout 直出し (JSON envelope で包まない — glue
+/// script の消費形と一致)。失敗時は JSON envelope + exit 1|2。
+pub fn cmd_completion_query(
+  def_text : String,
+  words : Array[String],
+  cword : Int?,
+) -> CmdResult {
+  let defj = @json.parse(def_text) catch {
+    _ =>
+      return {
+        json: error_json(
+          "malformed_definition_json", "definition text is not valid JSON",
+        ),
+        exit: 2,
+      }
+  }
+  let registry = @engine.Registry::new()
+  @kuu.install_canonical(registry)
+  match @kuu.parse_definition(defj, extensions=registry) {
+    Err(@kuu.Malformed(reason)) =>
+      { json: error_json("malformed_definition", reason), exit: 1 }
+    Err(@kuu.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
+    Ok(ast) => {
+      let response = @kuu.completion_query(ast, registry, words, cword~)
+      { json: response, exit: 0 }
+    }
+  }
+}
+
+///|
+/// Recursively walk a raw definition JSON collecting all `"completer": "<name>"` string values,
+/// **excluding builtin residents** (`files` / `dirs`, DR-117 §7). Dedup while preserving
+/// first-seen order. Used by `cmd_validate` to build the custom-completer capability report
+/// (DR-117 §6, findings §1.2 M4).
+fn collect_completer_names(
+  j : Json,
+  out : Array[String],
+  seen : Map[String, Unit],
+) -> Unit {
+  match j {
+    Object(o) =>
+      for k, v in o {
+        if k == "completer" {
+          match v {
+            String(name) =>
+              if name != "files" && name != "dirs" {
+                if seen.get(name) is None {
+                  seen.set(name, ())
+                  out.push(name)
+                }
+              }
+            _ => ()
+          }
+        } else {
+          collect_completer_names(v, out, seen)
+        }
+      }
+    Array(items) =>
+      for it in items {
+        collect_completer_names(it, out, seen)
+      }
+    _ => ()
+  }
 }

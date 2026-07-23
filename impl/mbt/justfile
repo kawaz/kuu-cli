@@ -74,6 +74,16 @@ lint: setup
 test: setup
     cd "{{MBT_ROOT}}" && moon test cli/src/lib --target native
     cd "{{MBT_ROOT}}" && just e2e
+    cd "{{MBT_ROOT}}" && just smoke
+
+# completion smoke test (DR-117 §8.2 = findings 2026-07-23 §5.2、M4)。3 shell の syntax-check +
+# bash 関数直呼び (mock binary 経由の form-A end-to-end) + 形態 B `kuu completion query` の
+# 候補列挙。fish 未インストール環境では該当 assertion を skip する。zsh 関数直呼びは compinit
+# 依存で CI 化が難しく本 smoke ではスコープ外 (findings §5.2 に従い段 1 tmux 実端末マトリクスへ委ねる)。
+smoke:
+    cd "{{MBT_ROOT}}" && moon build --target native
+    KUU_CLI="{{MBT_ROOT}}/_build/native/debug/build/kawaz/kuu-cli-mbt/main/main.exe" \
+      bash "{{MBT_ROOT}}/tests/smoke/completion_smoke.sh"
 
 # CLI レベル e2e: kuu/fixtures の代表 case を fixture 本体から case id 経由で消費し、compiled
 # binary の出力が fixture expect の代表 field と一致することを pin する。
