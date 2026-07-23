@@ -149,12 +149,18 @@ fi
 # ---- (3) fish `complete -C` による候補列挙 --------------------------------
 
 if command -v fish >/dev/null 2>&1; then
+  # bash と同型: kuu-cli は形態 A (env プロトコル) に応じないため mock binary で
+  # `kuu completion query` (形態 B) へ橋渡しし、glue の end-to-end を検証する。
+  # mock は bash セクションと同じ script を再利用。
+  "$KUU_CLI" completion generate "$def_json" \
+    --shell fish --binary "$tmpdir/mock_binary" --uuid "$uuid" \
+    > "$tmpdir/comp.fish.mock"
   # fish は独立プロセスで source + complete -C を試す。
-  out=$(fish -c 'source '"$tmpdir/comp.fish"'; complete -C "myapp --"' 2>"$tmpdir/err.fish2" || true)
+  out=$(fish -c 'source '"$tmpdir/comp.fish.mock"'; complete -C "myapp --"' 2>"$tmpdir/err.fish2" || true)
   if echo "$out" | grep -q -- '--port' && echo "$out" | grep -q -- '--verbose'; then
-    report ok "fish complete -C" "candidates contain --port and --verbose"
+    report ok "fish complete -C (via mock binary)" "candidates contain --port and --verbose"
   else
-    report fail "fish complete -C" "unexpected output: $out (stderr: $(cat "$tmpdir/err.fish2"))"
+    report fail "fish complete -C (via mock binary)" "unexpected output: $out (stderr: $(cat "$tmpdir/err.fish2"))"
   fi
 else
   report skip "fish complete -C" "fish not found"
