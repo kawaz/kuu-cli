@@ -239,7 +239,142 @@ fn run_parse(command : Array[(String, @kuu.ResultValue)]) -> @lib.CmdResult {
         ("stderr", @kuu.tty_obs(c_isatty(2) == 1, false)),
       ])
   }
-  @lib.cmd_parse(def_text, parse_args, env~, config~, tty~)
+  let result = @lib.cmd_parse(def_text, parse_args, env~, config~, tty~)
+  emit_bool_missing_operand_hint(def_text, result)
+  result
+}
+
+fn emit_bool_missing_operand_hint(
+  def_text : String,
+  result : @lib.CmdResult,
+) -> Unit {
+  if result.exit == 0 {
+    return
+  }
+  let outcome = @json.parse(result.json) catch { _ => return }
+  let definition = @json.parse(def_text) catch { _ => return }
+  match outcome {
+    Object(fields) =>
+      match fields.get("errors") {
+        Some(Array(errors)) =>
+          for error in errors {
+            match error {
+              Object(error_fields) => {
+                let reason = match error_fields.get("reason") {
+                  Some(String(value)) => value
+                  _ => ""
+                }
+                let element = match error_fields.get("element") {
+                  Some(String(value)) => value
+                  _ => ""
+                }
+                let path = match error_fields.get("path") {
+                  Some(value) => json_string_array(value)
+                  None => Some([])
+                }
+                match path {
+                  Some(command_path) =>
+                    if reason == "missing_operand" &&
+                      definition_element_has_type(
+                        definition,
+                        command_path,
+                        element,
+                        "bool",
+                      ) {
+                      eprintln(
+                        "hint: declare it as type \"flag\" if it takes no value",
+                      )
+                      return
+                    }
+                  None => ()
+                }
+              }
+              _ => ()
+            }
+          }
+        _ => ()
+      }
+    _ => ()
+  }
+}
+
+fn json_string_array(value : Json) -> Array[String]? {
+  match value {
+    Array(items) => {
+      let out : Array[String] = []
+      for item in items {
+        match item {
+          String(text) => out.push(text)
+          _ => return None
+        }
+      }
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+fn definition_element_has_type(
+  definition : Json,
+  command_path : Array[String],
+  element : String,
+  type_name : String,
+) -> Bool {
+  let mut scope = definition
+  for command_name in command_path {
+    let next = definition_named_child(scope, "commands", command_name)
+    match next {
+      Some(command) => scope = command
+      None => return false
+    }
+  }
+  definition_named_child_has_type(scope, "options", element, type_name) ||
+  definition_named_child_has_type(scope, "positionals", element, type_name)
+}
+
+fn definition_named_child_has_type(
+  scope : Json,
+  collection : String,
+  element : String,
+  type_name : String,
+) -> Bool {
+  match definition_named_child(scope, collection, element) {
+    Some(Object(fields)) =>
+      match fields.get("type") {
+        Some(String(value)) => value == type_name
+        _ => false
+      }
+    _ => false
+  }
+}
+
+fn definition_named_child(
+  scope : Json,
+  collection : String,
+  name : String,
+) -> Json? {
+  match scope {
+    Object(fields) =>
+      match fields.get(collection) {
+        Some(Array(entries)) =>
+          for entry in entries {
+            match entry {
+              Object(entry_fields) =>
+                match entry_fields.get("name") {
+                  Some(String(entry_name)) =>
+                    if entry_name == name {
+                      return Some(entry)
+                    }
+                  _ => ()
+                }
+              _ => ()
+            }
+          }
+        _ => ()
+      }
+    _ => ()
+  }
+  None
 }
 
 fn run_complete(command : Array[(String, @kuu.ResultValue)]) -> @lib.CmdResult {

@@ -250,6 +250,32 @@ e2e: generate-self-definition
     assert_eq "$id @depr sentinel leak" "$depr_leak" "0"
     printf "e2e OK: deprecated.json %s -> success, warnings=%s, no @depr in effects\n" "$id" "$(jq -c '.warnings' <<<"$out")"
 
+    # ── kuu-cli 自身の canonical help: 内部設計参照と日本語を公開文言へ漏らさない ──
+    help_out=$("$bin" --help)
+    dr_count=$(grep -c 'DR-[0-9]' <<<"$help_out" || true)
+    japanese_count=$(grep -Ec '[ぁ-んァ-ヶ一-龠]' <<<"$help_out" || true)
+    assert_eq "self help DR reference count" "$dr_count" "0"
+    assert_eq "self help Japanese character count" "$japanese_count" "0"
+    printf "e2e OK: self help contains no DR references or Japanese text\n"
+
+    # ── bool missing operand: flag 宣言への移行 hint は bool 要素だけに出す ──
+    printf '%s\n' '{"name":"hint-test","options":[{"name":"enabled","type":"bool","long":true},{"name":"label","type":"string","long":true}]}' > "$def_only"
+    hint_err=$(mktemp)
+    set +e
+    "$bin" parse "$def_only" -- --enabled >/dev/null 2>"$hint_err"
+    bool_ec=$?
+    set -e
+    assert_eq "bool missing operand exit" "$bool_ec" "1"
+    assert_eq "bool missing operand hint count" "$(grep -c '^hint: declare it as type "flag" if it takes no value$' "$hint_err" || true)" "1"
+    set +e
+    "$bin" parse "$def_only" -- --label >/dev/null 2>"$hint_err"
+    string_ec=$?
+    set -e
+    assert_eq "string missing operand exit" "$string_ec" "1"
+    assert_eq "string missing operand hint count" "$(grep -c '^hint:' "$hint_err" || true)" "0"
+    rm -f "$hint_err"
+    printf "e2e OK: bool missing operand emits flag hint; string does not\n"
+
 # ---------- conformance sweep (情報収集モード) ----------
 
 # 全 parse fixture を CLI 経由で走らせ、expect との field 単位一致を集計する骨格。
