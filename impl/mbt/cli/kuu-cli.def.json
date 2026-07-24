@@ -1,0 +1,367 @@
+{
+  "$schema": "https://raw.githubusercontent.com/kawaz/kuu/main/schema/wire.schema.json",
+  "name": "kuu",
+  "help": "Parse, validate, inspect, and complete kuu command definitions.",
+  "options": [
+    {
+      "name": "help",
+      "type": "help",
+      "long": true,
+      "global": true,
+      "help": "Show help for the selected command."
+    },
+    {
+      "name": "version",
+      "type": "string",
+      "long": [":set:0.0.0"],
+      "global": true,
+      "help": "Print the kuu version."
+    }
+  ],
+  "commands": [
+    {
+      "name": "parse",
+      "type": "command",
+      "help": "Parse arguments using a kuu definition.",
+      "options": [
+        {
+          "help_group_name": "sources",
+          "help_group_title": "Value source options"
+        },
+        {
+          "name": "no_env",
+          "type": "flag",
+          "long": true,
+          "help_group_name": "sources",
+          "help": "Ignore environment variables."
+        },
+        {
+          "name": "env",
+          "type": "string",
+          "long": true,
+          "multiple": "append",
+          "value_name": "KEY=VALUE",
+          "piece_filters": [
+            {
+              "name": "regex_match",
+              "args": ["^[^=]+=.*$"]
+            }
+          ],
+          "help_group_name": "sources",
+          "help": "Set an environment variable for the parsed command."
+        },
+        {
+          "name": "no_config",
+          "type": "flag",
+          "long": true,
+          "exclusive_group": ["config_source"],
+          "help_group_name": "sources",
+          "help": "Disable configuration value sources."
+        },
+        {
+          "name": "config",
+          "type": "string",
+          "long": true,
+          "exclusive_group": ["config_source"],
+          "value_name": "JSON_OR_FILE",
+          "help_group_name": "sources",
+          "help": "Use one JSON value or file for configuration."
+        },
+        {
+          "name": "config_file",
+          "long": true,
+          "seq": [
+            {
+              "name": "path",
+              "type": "string",
+              "value_name": "PATH"
+            },
+            {
+              "name": "value",
+              "type": "string",
+              "value_name": "JSON_OR_FILE"
+            }
+          ],
+          "multiple": "append",
+          "exclusive_group": ["config_source"],
+          "help_group_name": "sources",
+          "help": "Map a configuration path to a JSON value or file."
+        },
+        {
+          "name": "tty",
+          "type": "string",
+          "long": true,
+          "value_name": "JSON",
+          "help_group_name": "sources",
+          "help": "Override terminal observations with JSON."
+        },
+        {
+          "name": "--",
+          "type": "dd",
+          "help": "Stop parsing kuu options."
+        }
+      ],
+      "positionals": [
+        {
+          "name": "definition",
+          "type": "string",
+          "required": true,
+          "value_name": "DEF_JSON",
+          "completer": "files",
+          "help": "Definition JSON file, or - for standard input."
+        },
+        {
+          "name": "args",
+          "type": "string",
+          "repeat": {"min": 0},
+          "value_name": "ARG",
+          "help": "Arguments to parse."
+        }
+      ]
+    },
+    {
+      "name": "complete",
+      "type": "command",
+      "help": "Compute completion candidates for a definition.",
+      "options": [
+        {
+          "name": "args_before",
+          "type": "string",
+          "long": true,
+          "required": true,
+          "value_name": "JSON_ARRAY",
+          "help": "Arguments before the cursor as a JSON array."
+        },
+        {
+          "name": "args_after",
+          "type": "string",
+          "long": true,
+          "value_name": "JSON_ARRAY",
+          "help": "Arguments after the cursor as a JSON array."
+        }
+      ],
+      "positionals": [
+        {
+          "name": "definition",
+          "type": "string",
+          "required": true,
+          "value_name": "DEF_JSON",
+          "completer": "files",
+          "help": "Definition JSON file, or - for standard input."
+        }
+      ]
+    },
+    {
+      "name": "validate",
+      "type": "command",
+      "help": "Validate and lower a kuu definition.",
+      "positionals": [
+        {
+          "name": "definition",
+          "type": "string",
+          "required": true,
+          "value_name": "DEF_JSON",
+          "completer": "files",
+          "help": "Definition JSON file, or - for standard input."
+        }
+      ]
+    },
+    {
+      "name": "help",
+      "type": "command",
+      "help": "Render help for a kuu definition.",
+      "options": [
+        {
+          "name": "path",
+          "type": "string",
+          "long": true,
+          "value_name": "JSON_ARRAY",
+          "help": "Command path as a JSON array."
+        },
+        {
+          "name": "depth",
+          "long": true,
+          "values": ["scope", "all"],
+          "value_name": "DEPTH",
+          "help": "Render one scope or the full command tree."
+        },
+        {
+          "name": "category_mode",
+          "type": "string",
+          "long": true,
+          "value_filters": [
+            {
+              "name": "regex_match",
+              "args": ["^(default|all|named:.+)$"]
+            }
+          ],
+          "value_name": "MODE",
+          "help": "Select default, all, or named:<name> categories."
+        },
+        {
+          "name": "format",
+          "long": true,
+          "values": ["text", "json"],
+          "value_name": "FORMAT",
+          "help": "Select text or JSON output."
+        },
+        {
+          "name": "show_hidden",
+          "type": "flag",
+          "long": true,
+          "help": "Include hidden entries."
+        },
+        {
+          "name": "program_name",
+          "type": "string",
+          "long": true,
+          "value_name": "NAME",
+          "help": "Override the displayed program name."
+        },
+        {
+          "name": "binding",
+          "type": "string",
+          "long": true,
+          "multiple": "append",
+          "value_name": "NAME=VALUE",
+          "piece_filters": [
+            {
+              "name": "regex_match",
+              "args": ["^[^=]+=.*$"]
+            }
+          ],
+          "help": "Set a help template binding."
+        },
+        {
+          "name": "style_template",
+          "type": "string",
+          "long": true,
+          "value_name": "TEMPLATE",
+          "help": "Override the help section template."
+        },
+        {
+          "name": "style_value_structure",
+          "long": true,
+          "values": ["auto", "inline", "detail"],
+          "value_name": "STYLE",
+          "help": "Select value structure rendering."
+        },
+        {
+          "name": "style_types",
+          "long": true,
+          "values": ["auto", "aggregate", "inline"],
+          "value_name": "STYLE",
+          "help": "Select shared type rendering."
+        },
+        {
+          "name": "style_origin",
+          "long": true,
+          "values": ["merge", "separate_section", "reference", "omit"],
+          "value_name": "STYLE",
+          "help": "Select inherited option rendering."
+        }
+      ],
+      "positionals": [
+        {
+          "name": "definition",
+          "type": "string",
+          "optional": true,
+          "value_name": "DEF_JSON",
+          "completer": "files",
+          "help": "Definition JSON file, or - for standard input."
+        }
+      ]
+    },
+    {
+      "name": "completion",
+      "type": "command",
+      "help": "Generate completion glue or query candidates.",
+      "commands": [
+        {
+          "name": "generate",
+          "type": "command",
+          "help": "Generate shell completion glue.",
+          "options": [
+            {
+              "name": "shell",
+              "long": true,
+              "values": ["zsh", "bash", "fish"],
+              "required": true,
+              "value_name": "SHELL",
+              "help": "Target shell."
+            },
+            {
+              "name": "binary",
+              "type": "string",
+              "long": true,
+              "required": true,
+              "value_name": "REFERENCE",
+              "help": "Binary reference embedded in the generated glue."
+            },
+            {
+              "name": "uuid",
+              "type": "string",
+              "long": true,
+              "required": true,
+              "value_name": "UUID",
+              "help": "Unique completion protocol identifier."
+            },
+            {
+              "name": "program_name",
+              "type": "string",
+              "long": true,
+              "value_name": "NAME",
+              "help": "Override the completed program name."
+            }
+          ],
+          "positionals": [
+            {
+              "name": "definition",
+              "type": "string",
+              "required": true,
+              "value_name": "DEF_JSON",
+              "completer": "files",
+              "help": "Definition JSON file, or - for standard input."
+            }
+          ]
+        },
+        {
+          "name": "query",
+          "type": "command",
+          "help": "Query completion candidates directly.",
+          "options": [
+            {
+              "name": "cword",
+              "type": "int",
+              "long": true,
+              "value_name": "INDEX",
+              "help": "Cursor word index."
+            },
+            {
+              "name": "--",
+              "type": "dd",
+              "help": "Stop parsing kuu options."
+            }
+          ],
+          "positionals": [
+            {
+              "name": "definition",
+              "type": "string",
+              "required": true,
+              "value_name": "DEF_JSON",
+              "completer": "files",
+              "help": "Definition JSON file, or - for standard input."
+            },
+            {
+              "name": "words",
+              "type": "string",
+              "repeat": {"min": 0},
+              "value_name": "WORD",
+              "help": "Command words including the program name."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

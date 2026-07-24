@@ -73,8 +73,16 @@ lint: setup
 # cli パッケージのみ実行 (deps/kuu.mbt の 346 test は kuu.mbt 側の関心、ここでは走らせない)。
 test: setup
     cd "{{MBT_ROOT}}" && moon test cli/src/lib --target native
+    cd "{{MBT_ROOT}}" && just self-dogfood
     cd "{{MBT_ROOT}}" && just e2e
     cd "{{MBT_ROOT}}" && just smoke
+
+# kuu-cli 自身の definition を kuu.mbt で decode/lowering し、代表 argv の result shape を固定する。
+self-dogfood:
+    cd "{{MBT_ROOT}}" && moon build --target native
+    KUU_CLI="{{MBT_ROOT}}/_build/native/debug/build/kawaz/kuu-cli-mbt/main/main.exe" \
+      KUU_CLI_DEF="{{MBT_ROOT}}/cli/kuu-cli.def.json" \
+      bash "{{MBT_ROOT}}/tests/self/definition.sh"
 
 # completion smoke test (DR-117 §8.2 = findings 2026-07-23 §5.2、M4)。3 shell の syntax-check +
 # bash 関数直呼び (mock binary 経由の form-A end-to-end) + 形態 B `kuu completion query` の
