@@ -1,7 +1,6 @@
 import {
   "kawaz/kuu/abi",
   "kawaz/kuu/kuu",
-  "kawaz/kuu/kuu-node" @node,
   "moonbitlang/core/json",
   "moonbitlang/core/string",
 }

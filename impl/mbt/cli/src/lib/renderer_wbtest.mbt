@@ -15,13 +15,11 @@ fn build_model_for_test(def_text : String) -> @kuu.HelpModel {
   let defj = @json.parse(def_text) catch {
     _ => abort("test: def text is not valid JSON")
   }
-  let registry = @node.Registry::new()
-  @kuu.install_canonical(registry)
-  let ast = match @kuu.parse_definition(defj, extensions=registry) {
+  let ast = match @kuu.parse_definition(defj) {
     Ok(a) => a
     Err(_) => abort("test: parse_definition failed")
   }
-  match @kuu.dispatch_help_query(registry, ast) {
+  match @kuu.dispatch_help_query(ast) {
     @kuu.Model(m) => m
     _ => abort("test: dispatch_help_query did not return Model")
   }
@@ -159,13 +157,11 @@ test "renderer golden: separate_section inherited options at parent scope" {
   let defj = @json.parse(def) catch {
     _ => abort("test: def text is not valid JSON")
   }
-  let registry = @node.Registry::new()
-  @kuu.install_canonical(registry)
-  let ast = match @kuu.parse_definition(defj, extensions=registry) {
+  let ast = match @kuu.parse_definition(defj) {
     Ok(a) => a
     Err(_) => abort("test: parse_definition failed")
   }
-  let model = match @kuu.dispatch_help_query(registry, ast) {
+  let model = match @kuu.dispatch_help_query(ast) {
     @kuu.Model(m) => m
     _ => abort("test: dispatch_help_query did not return Model")
   }

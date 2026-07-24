@@ -127,7 +127,7 @@ pub fn cmd_complete(
 /// - Err(HelpQueryError) → `{"outcome":"query-error","errors":[{"kind":"absent-path"|"absent-category"}]}` (exit 1)
 /// - malformed definition JSON → exit 2 (parse subcommand と同じ扱い)
 /// - malformed definition (Rejected) → definition-error JSON (exit 1)
-/// - help_query capability 未登録 → exit 2 の error_json (canonical registry は必ず含むので通常発生しない)
+/// - help_query capability 未登録 → exit 2 の error_json (canonical assembly では通常発生しない)
 pub fn cmd_help(
   def_text : String,
   path : Array[String],
@@ -143,10 +143,7 @@ pub fn cmd_help(
         exit: 2,
       }
   }
-  // capability lookup 経路のため extensions を明示ビルドする (canonical と同じ = @kuu.install_canonical)。
-  let registry = @node.Registry::new()
-  @kuu.install_canonical(registry)
-  match @kuu.parse_definition(defj, extensions=registry) {
+  match @kuu.parse_definition(defj) {
     Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
     Err(@kuu.Rejected(errs)) =>
@@ -158,8 +155,7 @@ pub fn cmd_help(
       // JSON wire、他は legacy CLI 慣習)。
       { json: def_errors_help_envelope(errs).stringify(indent=2), exit: 1 }
     Ok(ast) =>
-      match
-        @kuu.dispatch_help_query(registry, ast, path~, depth~, category_mode~) {
+      match @kuu.dispatch_help_query(ast, path~, depth~, category_mode~) {
         @kuu.Unavailable =>
           {
             json: error_json(
@@ -196,16 +192,13 @@ pub fn cmd_help_text(
         exit: 2,
       }
   }
-  let registry = @node.Registry::new()
-  @kuu.install_canonical(registry)
-  match @kuu.parse_definition(defj, extensions=registry) {
+  match @kuu.parse_definition(defj) {
     Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
     Err(@kuu.Rejected(errs)) =>
       { json: def_errors_help_envelope(errs).stringify(indent=2), exit: 1 }
     Ok(ast) =>
-      match
-        @kuu.dispatch_help_query(registry, ast, path~, depth~, category_mode~) {
+      match @kuu.dispatch_help_query(ast, path~, depth~, category_mode~) {
         @kuu.Unavailable =>
           {
             json: error_json(
@@ -568,7 +561,7 @@ fn cand_to_json(c : @kuu.Candidate) -> Json {
   }
   fields.push(("is_value", Json::boolean(c.is_value)))
   if c.is_value {
-    fields.push(("type", Json::string(c.ty)))
+    fields.push(("type", Json::string(c.type_name)))
   }
   fields.push(("origin", Json::string(c.origin)))
   fields.push(("term", Json::string(term_str(c.term))))
@@ -1128,7 +1121,8 @@ pub fn cmd_completion_generate(
               }
           }
       }
-      match @kuu.generate_completion_script(shell, program_name, binary, uuid) {
+      match
+        @kuu.generate_completion_script(shell, program_name~, binary~, uuid~) {
         Ok(script) => { json: script, exit: 0 }
         Err(@kuu.UnsupportedShell(sh)) =>
           {
@@ -1146,7 +1140,7 @@ pub fn cmd_completion_generate(
 ///|
 /// `kuu completion query <def_json_text> [--cword <N>] -- <words...>`:
 /// DR-117 §5 `completion_query` capability の形態 B 呼び出し (findings §1.2 UXL-Q1=a — 行応答
-/// 組み立ての実体は kuu.mbt `completion_query()`、本関数は def.json 読みと registry 組みの glue)。
+/// 組み立ての実体は kuu.mbt `completion_query()`、本関数は def.json 読みの glue)。
 ///
 /// 出力: 成功時 DR-117 §4 の行指向応答テキストを stdout 直出し (JSON envelope で包まない — glue
 /// script の消費形と一致)。失敗時は JSON envelope + exit 1|2。
@@ -1164,14 +1158,12 @@ pub fn cmd_completion_query(
         exit: 2,
       }
   }
-  let registry = @node.Registry::new()
-  @kuu.install_canonical(registry)
-  match @kuu.parse_definition(defj, extensions=registry) {
+  match @kuu.parse_definition(defj) {
     Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
     Err(@kuu.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
     Ok(ast) => {
-      let response = @kuu.completion_query(ast, registry, words, cword~)
+      let response = @kuu.completion_query(ast, words, cword~)
       { json: response, exit: 0 }
     }
   }
