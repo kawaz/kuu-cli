@@ -137,7 +137,8 @@ priv struct EffectiveStyle {
 fn build_context(model : @kuu.HelpModel, opts : RenderOpts) -> RenderCtx {
   // model.render の 4 キーを受け、opts.style で 3 段目上書き、最後に canonical 既定 (§5) で埋める。
   let (m_tpl, m_vs, m_ts, m_os) = match model.render {
-    Some(r) => (r.template, r.value_structure_style, r.types_style, r.origin_style)
+    Some(r) =>
+      (r.template, r.value_structure_style, r.types_style, r.origin_style)
     None => (None, None, None, None)
   }
   let template = match opts.style.template {
@@ -159,7 +160,12 @@ fn build_context(model : @kuu.HelpModel, opts : RenderOpts) -> RenderCtx {
   // program_name: opts 優先、なければ command_path 先頭、それも空なら "" (usage 行で空表示)。
   let program_name = match opts.program_name {
     Some(n) => n
-    None => if model.command_path.length() > 0 { model.command_path[0] } else { "" }
+    None =>
+      if model.command_path.length() > 0 {
+        model.command_path[0]
+      } else {
+        ""
+      }
   }
   // bindings に program_name の暗黙供給を混ぜる (明示指定が優先)。
   let bindings : Map[String, String] = Map([])
@@ -293,11 +299,7 @@ fn resolve_placeholder(ident : String, ctx : RenderCtx) -> String {
 /// options → positionals → epilog。既定骨格の順は canonical、§6.2 で非規範。
 fn render_default_skeleton(ctx : RenderCtx) -> String {
   let parts : Array[String] = []
-  let push = fn(s : String) {
-    if s.length() > 0 {
-      parts.push(s)
-    }
-  }
+  let push = fn(s : String) { if s.length() > 0 { parts.push(s) } }
   push(section_usage(ctx))
   push(section_description(ctx, long=false))
   push(section_types(ctx))
@@ -467,7 +469,10 @@ fn section_options(ctx : RenderCtx) -> String {
   if all_entries.length() == 0 {
     return ""
   }
-  let (local_entries, inherited_entries) = split_by_origin(all_entries, ctx.style.origin_style)
+  let (local_entries, inherited_entries) = split_by_origin(
+    all_entries,
+    ctx.style.origin_style,
+  )
   let out = StringBuilder::new()
   if local_entries.length() > 0 {
     out.write_string(render_option_block(SEC_OPTIONS, local_entries, ctx))
@@ -477,7 +482,9 @@ fn section_options(ctx : RenderCtx) -> String {
       out.write_char('\n')
       out.write_char('\n')
     }
-    out.write_string(render_option_block(SEC_INHERITED_OPTIONS, inherited_entries, ctx))
+    out.write_string(
+      render_option_block(SEC_INHERITED_OPTIONS, inherited_entries, ctx),
+    )
   }
   // origin_style="reference" のときは案内文だけ出す (詳細列挙は omit)。
   if ctx.style.origin_style == "reference" && any_inherited(all_entries) {
@@ -485,7 +492,9 @@ fn section_options(ctx : RenderCtx) -> String {
       out.write_char('\n')
       out.write_char('\n')
     }
-    out.write_string("  (use `--help --category-mode all` to view inherited options)")
+    out.write_string(
+      "  (use `--help --category-mode all` to view inherited options)",
+    )
   }
   out.to_string()
 }
@@ -551,7 +560,10 @@ fn split_by_origin(
       let filtered : Array[@kuu.HelpOptionEntry] = []
       for e in entries {
         match e {
-          @kuu.Option(o) => if !is_inherited_origin(o.origin) { filtered.push(@kuu.Option(o)) }
+          @kuu.Option(o) =>
+            if !is_inherited_origin(o.origin) {
+              filtered.push(@kuu.Option(o))
+            }
           @kuu.Group(_) => filtered.push(e)
         }
       }
@@ -684,12 +696,11 @@ fn collect_by_group(
   let group_decls : Array[@kuu.HelpOptionEntry] = []
   for e in entries {
     match e {
-      @kuu.Group(g) => {
+      @kuu.Group(g) =>
         if !group_order.contains(g.name) {
           group_order.set(g.name, group_decls.length())
           group_decls.push(@kuu.Group(g))
         }
-      }
       _ => ()
     }
   }
@@ -755,13 +766,12 @@ fn render_option_row(o : @kuu.HelpOption, w : Int, ctx : RenderCtx) -> String {
   let vs_style = effective_option_vs_style(o, ctx)
   if vs_style == "detail" {
     match o.value_structure {
-      Some(vs) => {
+      Some(vs) =>
         for line in value_structure_detail_lines(vs) {
           out.write_string(HANG)
           out.write_string(line)
           out.write_char('\n')
         }
-      }
       None => ()
     }
   }
@@ -856,12 +866,12 @@ fn render_default(d : @kuu.HelpDefault) -> String {
 }
 
 ///|
-fn value_to_str(v : @engine.Value) -> String {
+fn value_to_str(v : @kuu.Value) -> String {
   match v {
-    @engine.String(s) => s
-    @engine.Bool(true) => "true"
-    @engine.Bool(false) => "false"
-    @engine.Number(d) => d.to_string()
+    @abi.String(s) => s
+    @abi.Bool(true) => "true"
+    @abi.Bool(false) => "false"
+    @abi.Number(d) => d.to_string()
   }
 }
 
@@ -982,7 +992,7 @@ fn section_types(ctx : RenderCtx) -> String {
 /// types_style を意識した inline 表記。aggregate モード (or auto かつ共有型) の type_ref は
 /// value_name 短縮 (`<COLOR>`)、inline モード or 未共有は展開 (`<COLOR_NAME | <R G B>>`)。
 fn value_structure_inline_aware(
-  vs : @engine.HelpValueStructure,
+  vs : @kuu.HelpValueStructure,
   vs_style : String,
   types_style : String,
   model : @kuu.HelpModel,
@@ -991,7 +1001,7 @@ fn value_structure_inline_aware(
   // 出す (head は 1 行制約)。auto/inline はここで inline を返す。
   ignore(vs_style)
   match vs {
-    @engine.TypeRef(ref_) => {
+    @abi.TypeRef(ref_) => {
       let aggregate = if types_style == "inline" {
         false
       } else if types_style == "aggregate" {
@@ -1008,7 +1018,13 @@ fn value_structure_inline_aware(
       } else {
         // inline 展開: 参照先の value_structure を substitute
         match find_type(model, ref_.id) {
-          Some(t) => value_structure_inline_aware(t.value_structure, vs_style, types_style, model)
+          Some(t) =>
+            value_structure_inline_aware(
+              t.value_structure,
+              vs_style,
+              types_style,
+              model,
+            )
           None =>
             match ref_.value_name {
               Some(vn) => "<" + vn + ">"
@@ -1023,28 +1039,28 @@ fn value_structure_inline_aware(
 
 ///|
 /// value_structure の 1 行表記 (types_style 非考慮の base 実装)。
-fn value_structure_inline(vs : @engine.HelpValueStructure) -> String {
+fn value_structure_inline(vs : @kuu.HelpValueStructure) -> String {
   match vs {
-    @engine.Single(sv) => {
+    @abi.Single(sv) => {
       let vn = sv.value_name.unwrap_or("VALUE")
       "<" + vn + ">"
     }
-    @engine.Seq(nodes) => {
+    @abi.Seq(nodes) => {
       let parts : Array[String] = []
       for n in nodes {
         parts.push(value_structure_inline(n))
       }
       join_strings(parts, " ")
     }
-    @engine.Or(nodes) => {
+    @abi.Or(nodes) => {
       let parts : Array[String] = []
       for n in nodes {
         parts.push(value_structure_inline(n))
       }
       "<" + join_strings(parts, " | ") + ">"
     }
-    @engine.Repeat(spec) => render_repeat(spec)
-    @engine.TypeRef(ref_) => {
+    @abi.Repeat(spec) => render_repeat(spec)
+    @abi.TypeRef(ref_) => {
       let vn = ref_.value_name.unwrap_or(ref_.id)
       "<" + vn + ">"
     }
@@ -1065,11 +1081,11 @@ fn value_structure_inline(vs : @engine.HelpValueStructure) -> String {
 ///
 /// 内側 node が Single 以外 (Or / Seq / TypeRef ネスト) は現状 fixture に corpus 無し。
 /// 安全に fallback (旧: `inner + {m..n}` 外付け) で受ける — 表記確定時に見直す (kawaz 裁定待ち)。
-fn render_repeat(spec : @engine.HelpRepeatSpec) -> String {
+fn render_repeat(spec : @kuu.HelpRepeatSpec) -> String {
   let min_v = spec.min.unwrap_or(0)
   // core name: Single の value_name (or "VALUE")。Single 以外は fallback へ。
   match spec.node {
-    @engine.Single(sv) => {
+    @abi.Single(sv) => {
       let vn = sv.value_name.unwrap_or("VALUE")
       render_repeat_with_core(vn, min_v, spec.max)
     }
@@ -1128,19 +1144,17 @@ fn fallback_repeat_suffix(min_v : Int, max : Int?) -> String {
 
 ///|
 /// value_structure_style="detail" 時に option 行の下に追加する枝説明行。
-fn value_structure_detail_lines(vs : @engine.HelpValueStructure) -> Array[String] {
+fn value_structure_detail_lines(vs : @kuu.HelpValueStructure) -> Array[String] {
   let out : Array[String] = []
   match vs {
-    @engine.Or(nodes) => {
+    @abi.Or(nodes) =>
       for n in nodes {
         out.push(value_structure_inline(n))
       }
-    }
-    @engine.Seq(nodes) => {
+    @abi.Seq(nodes) =>
       for n in nodes {
         out.push(value_structure_inline(n))
       }
-    }
     _ => out.push(value_structure_inline(vs))
   }
   out

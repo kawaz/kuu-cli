@@ -239,12 +239,12 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
   // config 面: --config-file (path→config マップ注入) > --config (単一 config 注入) >
   // --no-config (全パス None) > 既定 (definition の config_file が解決したパスの実ファイル読み)。
   // 3 者は排他 (上で検査済) なので分岐は 4-way match。
-  let config : (String) -> @engine.ConfigVal? = if no_config {
+  let config : (String) -> @kuu.ConfigVal? = if no_config {
     fn(_p) { None }
   } else if config_file_entries.length() > 0 {
     // path→ConfigVal のマップを構築 (後勝ち)。マップ外パスの照会は None (供給なし)。
     // fixture の `config_files` 表記 (path.json の path ladder 動的解決) に対応する provider。
-    let map : Map[String, @engine.ConfigVal] = Map([])
+    let map : Map[String, @kuu.ConfigVal] = Map([])
     for entry in config_file_entries {
       let path = entry.0
       let text = entry.1

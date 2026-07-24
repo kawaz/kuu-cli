@@ -15,7 +15,7 @@ fn build_model_for_test(def_text : String) -> @kuu.HelpModel {
   let defj = @json.parse(def_text) catch {
     _ => abort("test: def text is not valid JSON")
   }
-  let registry = @engine.Registry::new()
+  let registry = @node.Registry::new()
   @kuu.install_canonical(registry)
   let ast = match @kuu.parse_definition(defj, extensions=registry) {
     Ok(a) => a
@@ -159,7 +159,7 @@ test "renderer golden: separate_section inherited options at parent scope" {
   let defj = @json.parse(def) catch {
     _ => abort("test: def text is not valid JSON")
   }
-  let registry = @engine.Registry::new()
+  let registry = @node.Registry::new()
   @kuu.install_canonical(registry)
   let ast = match @kuu.parse_definition(defj, extensions=registry) {
     Ok(a) => a

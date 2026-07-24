@@ -8,11 +8,10 @@
 // 【front_door 2 段構成】(kuu.mbt MDR-005 §1 追記、2026-07-16、issue
 // front-door-parse-missing-postprocessing の kuu-cli 側追随):
 //
-// 玄関 API は `parse` (spec 準拠の Outcome 骨格 = parse_tree + apply_requires_filter +
+// 玄関 API は `parse` (spec 準拠の ParsedOutcome 骨格 = parse_tree + apply_requires_filter +
 // promote_collision_ambiguous) と `resolve` (値源ラダー = env / config / inherit / default
-// seat fill を子 scope まで再帰的に充填) の 2 段。`parse` は env / config / tty を optional
-// 引数で受け、`resolve` も同じ引数を受ける (現状 kuu-cli は 3 系ともデフォルト = 空 で呼ぶ、
-// CLI 面からの供給は今回スコープ外だが玄関 API としては存在する)。
+// seat fill を子 scope まで再帰的に充填) の 2 段。値源は `ValueSources` に束ね、parse と resolve
+// の両相へ同じ値を渡す。Success payload は ParsedBindings → ResolvedBindings と段階型で遷移する。
 //
 // 出力 JSON の内訳 (spec DR-109 §2 = fixture expect と厳密一致、余剰フィールドは出さない):
 //   - `effects`: parse Success の生 binds (resolve 前) から DR-045 §1 効果列を組む
@@ -56,7 +55,7 @@ pub fn cmd_parse(
   def_text : String,
   args : Array[String],
   env? : Map[String, String] = Map([]),
-  config? : (String) -> @engine.ConfigVal? = fn(_p) { None },
+  config? : (String) -> @abi.ConfigVal? = fn(_p) { None },
   tty? : Map[String, @kuu.TtyObs] = Map([]),
 ) -> CmdResult {
   let defj = @json.parse(def_text) catch {
@@ -73,8 +72,13 @@ pub fn cmd_parse(
       { json: error_json("malformed_definition", reason), exit: 1 }
     Err(@kuu.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
     Ok(ast) => {
-      let outcome = @kuu.parse(ast, args, env~, config~, tty~)
-      let (obj, exit) = outcome_to_json(ast, outcome, args, env, config, tty)
+      let sources = @kuu.value_sources(env=@kuu.env_from_map(env), config~, tty=fn(
+        stream,
+      ) {
+        tty.get(stream)
+      })
+      let outcome = @kuu.parse(ast, args, sources~)
+      let (obj, exit) = outcome_to_json(ast, outcome, args, sources)
       { json: obj.stringify(indent=2), exit }
     }
   }
@@ -140,7 +144,7 @@ pub fn cmd_help(
       }
   }
   // capability lookup 経路のため extensions を明示ビルドする (canonical と同じ = @kuu.install_canonical)。
-  let registry = @engine.Registry::new()
+  let registry = @node.Registry::new()
   @kuu.install_canonical(registry)
   match @kuu.parse_definition(defj, extensions=registry) {
     Err(@kuu.Malformed(reason)) =>
@@ -192,7 +196,7 @@ pub fn cmd_help_text(
         exit: 2,
       }
   }
-  let registry = @engine.Registry::new()
+  let registry = @node.Registry::new()
   @kuu.install_canonical(registry)
   match @kuu.parse_definition(defj, extensions=registry) {
     Err(@kuu.Malformed(reason)) =>
@@ -289,31 +293,29 @@ pub fn cmd_validate(def_text : String) -> CmdResult {
 /// JSON を出す。`args` は resolve が at_pos 計算 (DR-066 §4) に使う。
 fn outcome_to_json(
   ast : @kuu.AtomicAST,
-  po : @engine.Outcome,
+  po : @kuu.ParsedOutcome,
   args : Array[String],
-  env : Map[String, String],
-  config : (String) -> @engine.ConfigVal?,
-  tty : Map[String, @kuu.TtyObs],
+  sources : @kuu.ValueSources,
 ) -> (Json, Int) {
   match po {
-    @engine.Success(pbinds) => {
+    @kuu.Success(pbinds) => {
       // resolve 相を通して値源ラダー (env / config / inherit / default) を充填 (DR-109 §7 =
       // 既定で resolve 適用、値源は §6 の実環境 / 試験用オプション経由で呼び出し側が確定済み)。
-      let ro = @kuu.resolve(ast, po, args, env~, config~, tty~)
+      let ro = @kuu.resolve(ast, pbinds, args, sources~)
       match ro {
-        @engine.Success(rbinds) => {
+        @kuu.Success(rbinds) => {
           // effects / result / sources は front_door の OutputView 1 発 (kuu.mbt MDR-005 追記) を
           // 使う — sentinel / config_file / none / dd の除外規則は front_door 側の正本 1 箇所に
           // 集約済み (旧 `@kuu.is_sentinel` + 手組み `is_excluded_cell` の重複実装を解消)。
           // effects は parse 段の生 binds (`pbinds`)、result / sources は resolve 済み binds
           // (`rbinds`) から組む — 相区分は変えない (DR-045 §1 / DR-109 §5-§7 と同じ素材の対応)。
-          let view = @kuu.output(ast, effects=pbinds, resolved=rbinds)
-          let effects = output_effects_to_json(view.effects)
+          let view = @kuu.output(ast, rbinds)
+          let effects = output_effects_to_json(pbinds.effects(ast))
           let result = rval_to_json(view.result)
           let sources = source_entries_to_json(view.sources)
           // warnings は空でも `[]` を出す (DR-109 §2 の厳密一致 — fixture の `warnings: []`
           // 期待と同形)。
-          let ws = @kuu.warnings(po)
+          let ws = po.warnings()
           let fields : Array[(String, Json)] = [
             ("outcome", Json::string("success")),
             ("effects", effects),
@@ -323,30 +325,15 @@ fn outcome_to_json(
           ]
           (Json::object(Map::from_array(fields)), 0)
         }
-        @engine.Failure(d) =>
+        @kuu.Failure(d) =>
           // 値源解決 (env/config seat parse や DR-009 §7 filter reject) で転落した場合は
           // failure JSON を返す (spec DR-053 §2 の failure に resolve 相失敗も含まれる)。
-          // warnings は parse Outcome から取る (deprecated marker は parse 段の binds に載る)。
-          (failure_to_json(d, po), 1)
-        _ =>
-          // spec 上 `resolve` は Ambiguous をパススルーするだけで新規 Ambiguous 化することは
-          // ない (kuu.mbt MDR-005 §1)。到達不可の安全網。
-          (
-            failure_to_json(
-              {
-                errors: [],
-                fired_action: None,
-                help_entry: None,
-                tried_triggers: [],
-              },
-              po,
-            ),
-            1,
-          )
+          // failure 経路では warnings を出さない。
+          (failure_to_json(d), 1)
       }
     }
-    @engine.Failure(d) => (failure_to_json(d, po), 1)
-    @engine.Ambiguous(d) => {
+    @kuu.Failure(d) => (failure_to_json(d), 1)
+    @kuu.Ambiguous(d) => {
       // DR-109 §4: interpretation は resolve 相を適用せず parse 相の骨格のみ返す。各解釈は
       // result ビュー (claimants 無し) または `{result, claimants}` (共露出衝突あり、DR-073 §1
       // の「組で保持」)。ビューの組み立ては kuu 玄関 API `@kuu.output_of_interpretation` へ委譲
@@ -354,11 +341,12 @@ fn outcome_to_json(
       let arr : Array[Json] = []
       for interp in d.interpretations {
         let view = @kuu.output_of_interpretation(ast, interp)
-        if interp.claimants.length() == 0 {
+        let claimants = interp.claimants()
+        if claimants.length() == 0 {
           arr.push(rval_to_json(view))
         } else {
           let cl : Array[(String, Json)] = []
-          for kv in interp.claimants {
+          for kv in claimants {
             cl.push((kv.0, Json::string(kv.1)))
           }
           arr.push(
@@ -400,9 +388,9 @@ fn source_entries_to_json(entries : Array[@kuu.SourceEntry]) -> Json {
 }
 
 ///|
-/// Assemble the failure JSON (Failure outcome or resolve-layer failure). `po` は warnings 素材
-/// (deprecated marker は parse 段の binds に載る)。
-fn failure_to_json(d : @engine.FailureData, po : @engine.Outcome) -> Json {
+/// Assemble the failure JSON (Failure outcome or resolve-layer failure). Failure 経路は warnings を
+/// emit しない。
+fn failure_to_json(d : @kuu.ParseFailure) -> Json {
   let fields : Array[(String, Json)] = [
     ("outcome", Json::string("failure")),
     ("errors", parse_errors_to_json(d.errors)),
@@ -418,22 +406,17 @@ fn failure_to_json(d : @engine.FailureData, po : @engine.Outcome) -> Json {
     Some(h) => fields.push(("help_entry", Json::string(h)))
     None => ()
   }
-  let ws = @kuu.warnings(po)
-  if ws.length() > 0 {
-    fields.push(("warnings", warnings_to_json(ws)))
-  }
   Json::object(Map::from_array(fields))
 }
 
 ///|
 /// `warnings`: spec CONFORMANCE §2 が要求する `{element, kind}` の object 配列。素材は
-/// `@kuu.warnings` (kuu 玄関 API、内部は kuu.mbt eval.mbt の `warnings_structured` へ委譲。旧
-/// `warnings_of` の element 配列を kind 情報つきに拡張したもの、codex M-1 解消)。
-fn warnings_to_json(ws : Array[@engine.Warning]) -> Json {
+/// `ParsedOutcome::warnings()` から得る。
+fn warnings_to_json(ws : Array[@kuu.Warning]) -> Json {
   let arr : Array[Json] = []
   for w in ws {
     let kind = match w.kind {
-      @engine.Deprecated => "deprecated"
+      @abi.Deprecated => "deprecated"
     }
     arr.push(
       Json::object({
@@ -468,7 +451,7 @@ fn output_effects_to_json(effects : Array[@kuu.OutputEffect]) -> Json {
     // front_door `project_effects` が descriptor 呼び出しで既に Set に折り畳んでいるため、Invoke
     // arm がここに残るのは descriptor 未登録の safety net 経路のみ (旧 Update 経路と同じ書式で emit)。
     match e.op {
-      @engine.Invoke(inv) => {
+      @abi.Invoke(inv) => {
         fields.push(("transform", Json::string(inv.name)))
         if inv.args.length() > 0 {
           fields.push(("args", strs_to_json(inv.args)))
@@ -485,17 +468,17 @@ fn output_effects_to_json(effects : Array[@kuu.OutputEffect]) -> Json {
 }
 
 ///|
-fn rval_to_json(r : @engine.ResultValue) -> Json {
+fn rval_to_json(r : @kuu.ResultValue) -> Json {
   match r {
-    @engine.ResultValue::Scalar(v) => value_to_json(v)
-    @engine.ResultValue::Array(xs) => {
+    @abi.ResultValue::Scalar(v) => value_to_json(v)
+    @abi.ResultValue::Array(xs) => {
       let arr : Array[Json] = []
       for x in xs {
         arr.push(rval_to_json(x))
       }
       Json::array(arr)
     }
-    @engine.ResultValue::Object(kv) => {
+    @abi.ResultValue::Object(kv) => {
       let pairs : Array[(String, Json)] = []
       for kv2 in kv {
         pairs.push((kv2.0, rval_to_json(kv2.1)))
@@ -506,21 +489,21 @@ fn rval_to_json(r : @engine.ResultValue) -> Json {
 }
 
 ///|
-fn value_to_json(v : @engine.Value) -> Json {
+fn value_to_json(v : @kuu.Value) -> Json {
   match v {
-    @engine.String(s) => Json::string(s)
-    @engine.Bool(b) => Json::boolean(b)
+    @abi.String(s) => Json::string(s)
+    @abi.Bool(b) => Json::boolean(b)
     // DR-092 §1/§2: JSON に inf リテラルは無いため、float 値位置の無限大は
     // protobuf3 準拠の文字列 sentinel ("Infinity" / "-Infinity") で表現する。
     // NaN は DR-074 で parse 段 Reject 済み (両型 Error) のためここに到達しない。
-    @engine.Number(d) if d.is_pos_inf() => Json::string("Infinity")
-    @engine.Number(d) if d.is_neg_inf() => Json::string("-Infinity")
-    @engine.Number(d) => Json::number(d)
+    @abi.Number(d) if d.is_pos_inf() => Json::string("Infinity")
+    @abi.Number(d) if d.is_neg_inf() => Json::string("-Infinity")
+    @abi.Number(d) => Json::number(d)
   }
 }
 
 ///|
-fn parse_errors_to_json(errs : Array[@engine.ParseError]) -> Json {
+fn parse_errors_to_json(errs : Array[@kuu.ParseError]) -> Json {
   let arr : Array[Json] = []
   for e in errs {
     let fields : Array[(String, Json)] = []
@@ -543,13 +526,13 @@ fn parse_errors_to_json(errs : Array[@engine.ParseError]) -> Json {
 }
 
 ///|
-fn def_errors_json(errs : Array[@engine.DefError]) -> String {
+fn def_errors_json(errs : Array[@kuu.DefError]) -> String {
   let obj = Json::object({ "errors": deferrs_to_json(errs) })
   obj.stringify(indent=2)
 }
 
 ///|
-fn deferrs_to_json(errs : Array[@engine.DefError]) -> Json {
+fn deferrs_to_json(errs : Array[@kuu.DefError]) -> Json {
   let arr : Array[Json] = []
   for e in errs {
     let fields : Array[(String, Json)] = [
@@ -577,7 +560,7 @@ fn strs_to_json(xs : Array[String]) -> Json {
 // ═════════════════════════════════════════════════════════════════════════════
 
 ///|
-fn cand_to_json(c : @engine.Candidate) -> Json {
+fn cand_to_json(c : @kuu.Candidate) -> Json {
   let fields : Array[(String, Json)] = []
   // spelling: required for exact triggers; omitted (equivalent to "") for value positions.
   if !c.is_value {
@@ -611,58 +594,58 @@ fn cand_to_json(c : @engine.Candidate) -> Json {
 // ═════════════════════════════════════════════════════════════════════════════
 
 ///|
-fn effect_op_str(op : @engine.EffectOp) -> String {
+fn effect_op_str(op : @kuu.EffectOp) -> String {
   match op {
-    @engine.Set => "set"
-    @engine.Default => "default"
-    @engine.Unset => "unset"
-    @engine.Empty => "empty"
-    @engine.Invoke(_) => "update"
-    @engine.Remove => "remove"
-    @engine.Splice => "splice"
+    @abi.Set => "set"
+    @abi.Default => "default"
+    @abi.Unset => "unset"
+    @abi.Empty => "empty"
+    @abi.Invoke(_) => "update"
+    @abi.Remove => "remove"
+    @abi.Splice => "splice"
   }
 }
 
 ///|
-fn source_str(s : @engine.Source) -> String {
+fn source_str(s : @kuu.Source) -> String {
   match s {
-    @engine.Cli => "cli"
-    @engine.Env => "env"
-    @engine.Config => "config"
-    @engine.Inherit => "inherit"
-    @engine.Tty => "tty"
-    @engine.Default => "default"
+    @abi.Cli => "cli"
+    @abi.Env => "env"
+    @abi.Config => "config"
+    @abi.Inherit => "inherit"
+    @abi.Tty => "tty"
+    @abi.Default => "default"
   }
 }
 
 ///|
-fn errkind_str(k : @engine.ErrorKind) -> String {
+fn errkind_str(k : @kuu.ErrorKind) -> String {
   match k {
-    @engine.ErrorKind::Parse => "parse"
-    @engine.ErrorKind::Filter => "filter"
-    @engine.ErrorKind::Constraint => "constraint"
+    @abi.ErrorKind::Parse => "parse"
+    @abi.ErrorKind::Filter => "filter"
+    @abi.ErrorKind::Constraint => "constraint"
   }
 }
 
 ///|
-fn deferr_kind_str(k : @engine.DefErrorKind) -> String {
+fn deferr_kind_str(k : @kuu.DefErrorKind) -> String {
   match k {
-    @engine.VocabIntersection => "vocab-intersection"
-    @engine.UnknownVocab => "unknown-vocab"
-    @engine.InvalidRange => "invalid-range"
-    @engine.AbsentRef => "absent-ref"
-    @engine.CircularRef => "circular-ref"
-    @engine.ZeroProgress => "zero-progress"
-    @engine.ConfigCycle => "config-cycle"
-    @engine.InvalidArgument => "invalid-argument"
+    @abi.VocabIntersection => "vocab-intersection"
+    @abi.UnknownVocab => "unknown-vocab"
+    @abi.InvalidRange => "invalid-range"
+    @abi.AbsentRef => "absent-ref"
+    @abi.CircularRef => "circular-ref"
+    @abi.ZeroProgress => "zero-progress"
+    @abi.ConfigCycle => "config-cycle"
+    @abi.InvalidArgument => "invalid-argument"
   }
 }
 
 ///|
-fn term_str(t : @engine.TermHint) -> String {
+fn term_str(t : @kuu.TermHint) -> String {
   match t {
-    @engine.WordEnd => "word_end"
-    @engine.Continue => "cont"
+    @abi.WordEnd => "word_end"
+    @abi.Continue => "cont"
   }
 }
 
@@ -693,7 +676,7 @@ fn help_query_error_json(err : @kuu.HelpQueryError) -> Json {
 /// help wire の definition-error envelope (DR-113 §9)。help_query は「合法な definition」を前提と
 /// するので、definition が Rejected な場合は query 経路を通さず `{"outcome":"definition-error",
 /// "errors":[{"element","kind"}]}` を返す。message / hint は fixture allowed_keys 外なので出さない。
-fn def_errors_help_envelope(errs : Array[@engine.DefError]) -> Json {
+fn def_errors_help_envelope(errs : Array[@kuu.DefError]) -> Json {
   let arr : Array[Json] = []
   for e in errs {
     let fields : Array[(String, Json)] = []
@@ -997,18 +980,18 @@ fn help_default_json(v : @kuu.HelpDefault) -> Json {
 /// help model 内の default 値専用の Value → JSON 変換 (parse 相の value_to_json と別関数)。
 /// help wire ではスカラー 3 型 (string/number/bool) のみを直接 JSON リテラルへ落とす。float の
 /// ±∞ は spec 上 help_default に現れない (DR-113 §4)。
-fn help_value_json(v : @engine.Value) -> Json {
+fn help_value_json(v : @kuu.Value) -> Json {
   match v {
-    @engine.String(s) => Json::string(s)
-    @engine.Bool(b) => Json::boolean(b)
-    @engine.Number(d) => Json::number(d)
+    @abi.String(s) => Json::string(s)
+    @abi.Bool(b) => Json::boolean(b)
+    @abi.Number(d) => Json::number(d)
   }
 }
 
 ///|
-fn help_value_structure_json(vs : @engine.HelpValueStructure) -> Json {
+fn help_value_structure_json(vs : @kuu.HelpValueStructure) -> Json {
   match vs {
-    @engine.Single(single) => {
+    @abi.Single(single) => {
       let inner : Map[String, Json] = Map([])
       match single.value_name {
         Some(v) => inner.set("value_name", Json::string(v))
@@ -1024,21 +1007,21 @@ fn help_value_structure_json(vs : @engine.HelpValueStructure) -> Json {
       }
       Json::object({ "single": Json::object(inner) })
     }
-    @engine.Seq(nodes) => {
+    @abi.Seq(nodes) => {
       let arr : Array[Json] = []
       for n in nodes {
         arr.push(help_value_structure_json(n))
       }
       Json::object({ "seq": Json::array(arr) })
     }
-    @engine.Or(nodes) => {
+    @abi.Or(nodes) => {
       let arr : Array[Json] = []
       for n in nodes {
         arr.push(help_value_structure_json(n))
       }
       Json::object({ "or": Json::array(arr) })
     }
-    @engine.Repeat(spec) => {
+    @abi.Repeat(spec) => {
       let inner : Map[String, Json] = Map([])
       match spec.min {
         Some(m) => inner.set("min", Json::number(m.to_double()))
@@ -1051,7 +1034,7 @@ fn help_value_structure_json(vs : @engine.HelpValueStructure) -> Json {
       inner.set("node", help_value_structure_json(spec.node))
       Json::object({ "repeat": Json::object(inner) })
     }
-    @engine.TypeRef(ref_) => {
+    @abi.TypeRef(ref_) => {
       let out : Map[String, Json] = Map([])
       out.set("type_ref", Json::string(ref_.id))
       match ref_.value_name {
@@ -1181,7 +1164,7 @@ pub fn cmd_completion_query(
         exit: 2,
       }
   }
-  let registry = @engine.Registry::new()
+  let registry = @node.Registry::new()
   @kuu.install_canonical(registry)
   match @kuu.parse_definition(defj, extensions=registry) {
     Err(@kuu.Malformed(reason)) =>
