@@ -1,335 +1,235 @@
-// main.mbt — `kuu` CLI entry (subcommand dispatch).
-//
-// 3 subcommands (kuu-cli DR-0001 §3 で確定させる CLI 入出力契約の輪郭を先に固めるため):
-//
-//   kuu parse    <def.json> -- <args...>
-//   kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]
-//   kuu validate <def.json>
-//
-// 入出力の形は `../lib/wire.mbt` の頭部コメントを参照。CLI 引数解析は手書き (kawaz の CLI 設計
-// 好み [cli-design-preferences] に沿った将来設計は kuu 自身での dogfooding 後に決める; PoC は
-// 卵と鶏の dogfooding を避け最小手書きに留める)。
-//
-// 【stdout / stderr 分離】 (codex #1 M-5、統括裁定 2026-07-16):
-//
-//   - **stdout**: machine 消費される単一 JSON object (parse / complete / validate の CmdResult 直列化)
-//     + `kuu help` の明示要求 (ユーザが受け取りたい情報、GNU coreutils 慣習)
-//   - **stderr**: human-oriented text (usage 表示、unknown subcommand、余剰引数エラー、
-//     子 subcommand の引数不足)。machine には食わせない前提
-//
-// 引数なし / unknown subcommand / 子 subcommand の引数不足 は **stderr に usage + exit 2**
-// (kawaz の CLI 好み [cli-design-preferences] 「引数なし実行 = usage 表示」を stdout/stderr 分離
-// と両立させる形)。`-h` short alias は明示指示なしに追加しない (m-4)。
+// `kuu` CLI entry. Its own command line is defined by kuu-cli.def.json and parsed by kuu.
 
-///|
-/// libc `exit(3)`. `moonbitlang/core/env` の pub API に process 終了コード制御が無いため
-/// FFI で直接束縛する (kawaz/kuu-cli-mbt は native target 専用、DR-0001 §3 の PoC に必要な
-/// 最小限の platform binding)。
 extern "c" fn c_exit(code : Int) = "exit"
 
-///|
-/// libc `write(2)`。stderr (fd=2) への human-text 出力に使う (M-5: stdout は machine JSON
-/// only、human text は stderr、codex レビュー #1 の統括裁定 2026-07-16)。MoonBit の core は
-/// `println` (stdout only) しか提供しないので FFI で fd 指定の低レベル write を束縛する
-/// — 出力量が小さい (usage 数行) ので buffer 分割の心配は不要 (単一 `write(2)` で足りる)。
-/// `#borrow(buf)` は MoonBit の FFI calling convention 明示 (pointer 型は #borrow か #owned
-/// が要求される、core/env の `get_env_var_ffi` と同型)。
 #borrow(buf)
 extern "c" fn c_write(fd : Int, buf : Bytes, len : Int) -> Int = "write"
 
-///|
-/// `c_exit` を `T` 型として返せるようにする wrapper (never returns)。match arm や
-/// let bind から型を揃えて呼べる。
+#borrow(buf)
+extern "c" fn c_read(fd : Int, buf : Bytes, len : Int) -> Int = "read"
+
+extern "c" fn c_isatty(fd : Int) -> Int = "isatty"
+
 fn[T] die(code : Int) -> T {
   c_exit(code)
   panic()
 }
 
-///|
-/// `s` を UTF-8 encode して stderr (fd=2) に書き出す (末尾改行付き)。標準 `println` の
-/// stderr 相当 — machine JSON と human text の stdout/stderr 分離のための唯一の primitive。
-/// `String::to_bytes` は UTF-16LE を返すので使わない (deprecated かつ非 UTF-8)。
 fn eprintln(s : String) -> Unit {
   let bytes = @utf8.encode(s + "\n")
   let _ = c_write(2, bytes, bytes.length())
 }
 
-///|
 fn main {
   let argv = @env.args()
+  let self_json = @json.parse(SELF_DEFINITION_JSON) catch {
+    _ => die_with("kuu: embedded definition is not valid JSON", 2)
+  }
+  let self_ast = match @kuu.parse_definition(self_json) {
+    Ok(ast) => ast
+    Err(_) => die_with("kuu: embedded definition was rejected", 2)
+  }
+  let process_env = @env.get_env_vars()
+  match @kuu.completion_entry(self_ast, argv, process_env) {
+    @kuu.Respond(text) => {
+      println(text)
+      return
+    }
+    @kuu.NotCompletion => ()
+  }
+
+  let args = argv_tail(argv)
+  if args.length() == 0 {
+    print_self_help([])
+    return
+  }
+  let sources = @kuu.value_sources()
+  match @kuu.parse(self_ast, args, sources~) {
+    @kuu.Failure(failure) => handle_self_failure(failure)
+    @kuu.Ambiguous(ambiguity) => {
+      eprintln("kuu: command line is ambiguous")
+      for interpretation in ambiguity.interpretations {
+        let claimants = interpretation.claimants()
+        for claimant in claimants {
+          eprintln("  " + claimant.0 + ": " + claimant.1)
+        }
+        match @kuu.resolve_interpretation(self_ast, interpretation, args, sources~) {
+          @kuu.Success(resolved) => eprintln(result_repr(@kuu.output(self_ast, resolved).result))
+          @kuu.Failure(_) => eprintln("  interpretation failed during resolve")
+        }
+      }
+      die(2)
+    }
+    @kuu.Success(parsed) =>
+      match @kuu.resolve(self_ast, parsed, args, sources~) {
+        @kuu.Failure(failure) => handle_self_failure(failure)
+        @kuu.Success(resolved) => dispatch(@kuu.output(self_ast, resolved).result)
+      }
+  }
+}
+
+fn argv_tail(argv : Array[String]) -> Array[String] {
   let args : Array[String] = []
   for i in 1..<argv.length() {
     args.push(argv[i])
   }
-  if args.length() == 0 {
-    print_usage_stderr()
-    die(2)
+  args
+}
+
+fn handle_self_failure(failure : @kuu.ParseFailure) -> Unit {
+  if failure.fired_action == Some("help") {
+    print_self_help(failure_path(failure))
+    return
   }
-  let sub = args[0]
-  let rest : Array[String] = []
-  for i in 1..<args.length() {
-    rest.push(args[i])
+  if failure.fired_action == Some("version") {
+    println(SELF_VERSION)
+    return
   }
-  let result : @lib.CmdResult = match sub {
-    "parse" => run_parse(rest)
-    "complete" => run_complete(rest)
-    "completion" => run_completion(rest)
-    "validate" => run_validate(rest)
-    "help" => {
-      // `kuu help` (no args) → CLI usage (GNU coreutils 慣習、明示的 help 要求は stdout)。
-      // `kuu help <def.json> [--path ...] [--depth ...] [--category-mode ...]` → definition
-      // に対する DR-113 help_query capability 呼び出し (dogfooding — アプリ側 kuu と同じ
-      // capability を CLI 経由で叩ける)。
-      if rest.length() == 0 {
-        println(usage_text())
-        return
+  if failure.errors.length() == 0 {
+    eprintln("kuu: invalid command line")
+  } else {
+    for error in failure.errors {
+      eprintln("kuu: " + error.message)
+    }
+  }
+  die(2)
+}
+
+fn failure_path(failure : @kuu.ParseFailure) -> Array[String] {
+  let path : Array[String] = []
+  for error in failure.errors {
+    if error.path.length() > path.length() {
+      path.clear()
+      for segment in error.path {
+        path.push(segment)
       }
-      run_help(rest)
-    }
-    "--help" => {
-      // subcommand の隣に立つ大域フラグは meta 用途のみ (CLI 自体の usage 表示)、exit 0
-      println(usage_text())
-      return
-    }
-    _ => {
-      eprintln("kuu: unknown subcommand '" + sub + "'")
-      print_usage_stderr()
-      die(2)
     }
   }
-  println(result.json)
-  if result.exit != 0 {
-    c_exit(result.exit)
+  path
+}
+
+fn print_self_help(path : Array[String]) -> Unit {
+  let result = @lib.cmd_help_text(
+    SELF_DEFINITION_JSON,
+    path,
+    @kuu.Scope,
+    @kuu.Default,
+    @lib.render_opts_default(),
+  )
+  if result.exit == 0 {
+    println(result.json)
+  } else {
+    eprintln(result.json)
+    die(2)
   }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// subcommand runners — parse CLI args → call into @lib
-// ═════════════════════════════════════════════════════════════════════════════
-
-///|
-/// libc `isatty(3)`。tty 観測の実環境既定取得 (DR-109 §6) に使う。fd: 0=stdin, 1=stdout,
-/// 2=stderr。返値 1 = terminal。
-extern "c" fn c_isatty(fd : Int) -> Int = "isatty"
-
-///|
-/// parse subcommand の usage (エラー時 stderr 表示の共通素材)。
-const PARSE_USAGE : String = "kuu parse <def.json> [--no-env] [--no-config] [--env k=v]... [--config <json|file>] [--config-file <path> <json|file>]... [--tty <json>] [--] <args...>"
-
-///|
-/// `kuu parse <def.json> [options] [--] <args...>`。<def.json> の後ろの `--` は POSIX-ish な
-/// 明示区切りだが PoC では optional (lone `--` を 1 つだけ skip、残り全部を parse target 扱い)。
-///
-/// 【env / config / tty の取得契約】 (spec DR-109 §6): kuu-cli はテストツールではなく、アプリ内
-/// kuu と同一挙動が本義 — **既定 = 実環境の取得** (env は実環境変数、tty は isatty(3) 観測。
-/// config は definition の config_file 宣言が実ファイルパスを解決する形なので、既定では
-/// 供給関数なし = 実ファイル読みは将来実装、現状は config_file 未宣言 definition で差が出ない)。
-/// その上で試験用の固定・注入オプションを持つ:
-///   --no-env           実環境変数を無視する (注入 --env のみが env 面に残る)
-///   --env k=v          env に k=v を注入 (繰返し可、実環境より優先 = 上書き)
-///   --no-config        config 供給を空に固定する
-///   --config <json|file>  config オブジェクトを JSON 文字列 or ファイルパスで注入 (path 不問で
-///                         同一 config を返す provider)
-///   --config-file <path> <json|file>  path→config のマップを供給する provider を組む (2 引数形、
-///                         繰返し可)。fixture の `config_files` 表記に対応 (path.json の
-///                         path ladder 動的解決)。マップ外パスの照会は None (供給なし) を返す
-///   --tty <json>       tty 観測を固定 (例: '{"stdout":{"terminal":true,"cygwin":false}}')。
-///                      未指定は isatty(3) の実観測 (cygwin は false — MSYS/Cygwin 検出は将来)
-///
-/// --no-config / --config / --config-file は互いに排他 (使うのは 1 種類のみ)。同時指定は usage
-/// error。--config-file は繰返し可 (同 path の 2 度指定は後勝ち、fixture にそのような case は無い
-/// が実装の一貫性のため)。
-fn run_parse(args : Array[String]) -> @lib.CmdResult {
-  if args.length() == 0 {
-    usage_die("kuu parse: missing <def.json>", PARSE_USAGE)
-  }
-  let def_path = args[0]
-  let def_text = match read_file_all(def_path) {
-    Ok(s) => s
-    Err(msg) => usage_die("kuu parse: " + msg, PARSE_USAGE)
-  }
-  // オプションと parse target を分離する。オプションは <def.json> の後・`--` の前のみ有効
-  // ([cli-design-preferences] の「メイン引数の後ろにもオプションを置ける」は、ここでは target
-  // args との曖昧衝突を `--` セパレータで解く形で満たす)。
-  let mut no_env = false
-  let mut no_config = false
-  let env_overrides : Array[(String, String)] = []
-  let mut config_text : String? = None
-  // config_file 注入: (path, json|file) の並び (繰返し可)。順序保持のため配列で受け、
-  // マップ構築時に後勝ちで畳む。
-  let config_file_entries : Array[(String, String)] = []
-  let mut tty_text : String? = None
-  let parse_args : Array[String] = []
-  let mut i = 1
-  let mut seen_dd = false
-  while i < args.length() {
-    let a = args[i]
-    if seen_dd {
-      parse_args.push(a)
-      i = i + 1
-      continue
+fn dispatch(result : @kuu.ResultValue) -> Unit {
+  let root = as_object(result, "root result")
+  match field_opt(root, "help") {
+    Some(@abi.Scalar(@abi.Bool(true))) => {
+      print_self_help([])
+      return
     }
-    if a == "--" {
-      seen_dd = true
-      i = i + 1
-    } else if a == "--no-env" {
-      no_env = true
-      i = i + 1
-    } else if a == "--no-config" {
-      no_config = true
-      i = i + 1
-    } else if a == "--env" && i + 1 < args.length() {
-      let kv = args[i + 1]
-      match split_once(kv, '=') {
-        Some(pair) => env_overrides.push(pair)
+    _ => ()
+  }
+  match string_field_opt(root, "version") {
+    Some(_) => {
+      println(SELF_VERSION)
+      return
+    }
+    None => ()
+  }
+  match object_field_opt(root, "parse") {
+    Some(command) => emit_payload(run_parse(command))
+    None =>
+      match object_field_opt(root, "complete") {
+        Some(command) => emit_payload(run_complete(command))
         None =>
-          usage_die(
-            "kuu parse: --env expects k=v, got '" + kv + "'",
-            PARSE_USAGE,
-          )
+          match object_field_opt(root, "validate") {
+            Some(command) => emit_payload(run_validate(command))
+            None =>
+              match object_field_opt(root, "help") {
+                Some(command) => run_help(command)
+                None =>
+                  match object_field_opt(root, "completion") {
+                    Some(command) => run_completion(command)
+                    None => die_with("kuu: no command was selected", 2)
+                  }
+              }
+          }
       }
-      i = i + 2
-    } else if a == "--config" && i + 1 < args.length() {
-      config_text = Some(args[i + 1])
-      i = i + 2
-    } else if a == "--config-file" && i + 2 < args.length() {
-      // 2 引数形 (UX-Q8 裁定 2026-07-16): `=` 繋ぎはパス内 `=` と衝突するため不採用、seq 多値
-      // の dogfooding として 2 引数の並びで受ける。
-      config_file_entries.push((args[i + 1], args[i + 2]))
-      i = i + 3
-    } else if a == "--tty" && i + 1 < args.length() {
-      tty_text = Some(args[i + 1])
-      i = i + 2
-    } else {
-      // オプションでも `--` でもない = parse target の先頭 (以降は全て target)
-      parse_args.push(a)
-      seen_dd = true
-      i = i + 1
-    }
   }
+}
 
-  // 排他チェック (--no-config / --config / --config-file は同時に 2 種以上使えない)。
-  let mut mode_count = 0
-  if no_config {
-    mode_count = mode_count + 1
+fn emit_payload(result : @lib.CmdResult) -> Unit {
+  println(result.json)
+  if result.exit != 0 {
+    die(1)
   }
-  if config_text is Some(_) {
-    mode_count = mode_count + 1
-  }
-  if config_file_entries.length() > 0 {
-    mode_count = mode_count + 1
-  }
-  if mode_count > 1 {
-    usage_die(
-      "kuu parse: --no-config / --config / --config-file are mutually exclusive",
-      PARSE_USAGE,
-    )
-  }
+}
 
-  // env 面: 実環境既定 (DR-109 §6) → --no-env で空に → --env k=v を上書き注入。
-  let env : Map[String, String] = if no_env {
+fn run_parse(command : Array[(String, @kuu.ResultValue)]) -> @lib.CmdResult {
+  let def_text = read_definition(string_field(command, "definition"))
+  let parse_args = strings_field(command, "args")
+  let env = if bool_field(command, "no_env", false) {
     Map([])
   } else {
     @env.get_env_vars()
   }
-  for kv in env_overrides {
-    env.set(kv.0, kv.1)
+  for raw in strings_field(command, "env") {
+    match split_once(raw, '=') {
+      Some(pair) => env.set(pair.0, pair.1)
+      None => die_with("kuu parse: --env expects KEY=VALUE", 2)
+    }
   }
 
-  // config 面: --config-file (path→config マップ注入) > --config (単一 config 注入) >
-  // --no-config (全パス None) > 既定 (definition の config_file が解決したパスの実ファイル読み)。
-  // 3 者は排他 (上で検査済) なので分岐は 4-way match。
-  let config : (String) -> @kuu.ConfigVal? = if no_config {
-    fn(_p) { None }
-  } else if config_file_entries.length() > 0 {
-    // path→ConfigVal のマップを構築 (後勝ち)。マップ外パスの照会は None (供給なし)。
-    // fixture の `config_files` 表記 (path.json の path ladder 動的解決) に対応する provider。
-    let map : Map[String, @kuu.ConfigVal] = Map([])
-    for entry in config_file_entries {
-      let path = entry.0
-      let text = entry.1
-      let j = @json.parse(text) catch {
-        _ =>
-          match read_file_all(text) {
-            Ok(s) =>
-              @json.parse(s) catch {
-                _ =>
-                  usage_die(
-                    "kuu parse: --config-file '" +
-                    path +
-                    "' value '" +
-                    text +
-                    "' is neither valid JSON nor a readable JSON file",
-                    PARSE_USAGE,
-                  )
-              }
-            Err(_) =>
-              usage_die(
-                "kuu parse: --config-file '" +
-                path +
-                "' value '" +
-                text +
-                "' is neither valid JSON nor a readable JSON file",
-                PARSE_USAGE,
-              )
-          }
-      }
-      map.set(path, @kuu.config_from_json(j))
-    }
-    fn(p) { map.get(p) }
+  let config : (String) -> @kuu.ConfigVal? = if bool_field(
+    command,
+    "no_config",
+    false,
+  ) {
+    fn(_) { None }
   } else {
-    match config_text {
-      Some(t) => {
-        // JSON として parse できればそのまま、できなければファイルパスとして読む
-        let j = @json.parse(t) catch {
-          _ =>
-            match read_file_all(t) {
-              Ok(s) =>
-                @json.parse(s) catch {
-                  _ =>
-                    usage_die(
-                      "kuu parse: --config '" +
-                      t +
-                      "' is neither valid JSON nor a readable JSON file",
-                      PARSE_USAGE,
-                    )
-                }
-              Err(_) =>
-                usage_die(
-                  "kuu parse: --config '" +
-                  t +
-                  "' is neither valid JSON nor a readable JSON file",
-                  PARSE_USAGE,
-                )
-            }
-        }
-        let cv = @kuu.config_from_json(j)
-        fn(_p) { Some(cv) }
+    match string_field_opt(command, "config") {
+      Some(raw) => {
+        let value = config_value(raw, "kuu parse: --config")
+        fn(_) { Some(value) }
       }
-      // 既定: definition が config_file でパスを解決してきたら実ファイルを読む
-      // (アプリ内 kuu と同一挙動、DR-109 §6)。読めない / JSON でないパスは供給なし。
-      None =>
-        fn(p) {
-          match read_file_all(p) {
-            Ok(s) => {
-              let j = @json.parse(s) catch { _ => return None }
-              Some(@kuu.config_from_json(j))
+      None => {
+        let entries = config_file_field(command)
+        if entries.length() > 0 {
+          let values : Map[String, @kuu.ConfigVal] = Map([])
+          for entry in entries {
+            values.set(
+              entry.0,
+              config_value(entry.1, "kuu parse: --config-file " + entry.0),
+            )
+          }
+          fn(path) { values.get(path) }
+        } else {
+          fn(path) {
+            match read_file_all(path) {
+              Ok(text) => {
+                let json = @json.parse(text) catch { _ => return None }
+                Some(@kuu.config_from_json(json))
+              }
+              Err(_) => None
             }
-            Err(_) => None
           }
         }
+      }
     }
   }
 
-  // tty 面: --tty 固定 > 既定 (isatty(3) 実観測、cygwin=false — MSYS/Cygwin 検出は将来)。
-  let tty : Map[String, @kuu.TtyObs] = match tty_text {
-    Some(t) => {
-      let j = @json.parse(t) catch {
-        _ => usage_die("kuu parse: --tty value is not valid JSON", PARSE_USAGE)
+  let tty : Map[String, @kuu.TtyObs] = match string_field_opt(command, "tty") {
+    Some(raw) => {
+      let json = @json.parse(raw) catch {
+        _ => die_with("kuu parse: --tty value is not valid JSON", 2)
       }
-      match tty_from_json(j) {
-        Ok(m) => m
-        Err(msg) => usage_die("kuu parse: --tty " + msg, PARSE_USAGE)
+      match tty_from_json(json) {
+        Ok(value) => value
+        Err(message) => die_with("kuu parse: --tty " + message, 2)
       }
     }
     None =>
@@ -342,537 +242,384 @@ fn run_parse(args : Array[String]) -> @lib.CmdResult {
   @lib.cmd_parse(def_text, parse_args, env~, config~, tty~)
 }
 
-///|
-/// `--tty` の JSON (`{"stdout":{"terminal":bool,"cygwin":bool},...}`) を Map[String, TtyObs] に
-/// decode する。fixture の `tty` 入力と同形 (DR-099 §4)。キー不在 = 提供なし、`cygwin` 省略 =
-/// false。
-fn tty_from_json(j : Json) -> Result[Map[String, @kuu.TtyObs], String] {
-  match j {
-    Object(o) => {
-      let m : Map[String, @kuu.TtyObs] = Map([])
-      for k, v in o {
-        match v {
-          Object(vo) => {
-            let terminal = match vo.get("terminal") {
-              Some(True) => true
-              Some(False) => false
-              _ => return Err("stream '" + k + "' needs boolean 'terminal'")
-            }
-            let cygwin = match vo.get("cygwin") {
-              Some(True) => true
-              Some(False) => false
-              None => false
-              _ => return Err("stream '" + k + "' has non-boolean 'cygwin'")
-            }
-            m.set(k, @kuu.tty_obs(terminal, cygwin))
-          }
-          _ => return Err("stream '" + k + "' value must be an object")
-        }
-      }
-      Ok(m)
-    }
-    _ => Err("value must be a JSON object of streams")
-  }
-}
-
-///|
-/// `s` を最初の `sep` で 2 分割する。sep が無ければ None。
-fn split_once(s : String, sep : Char) -> (String, String)? {
-  let mut idx = -1
-  let mut i = 0
-  for c in s {
-    if c == sep && idx < 0 {
-      idx = i
-    }
-    i = i + 1
-  }
-  if idx < 0 {
-    None
-  } else {
-    Some((s[0:idx].to_owned(), s[idx + 1:].to_owned()))
-  }
-}
-
-///|
-/// `kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]`
-fn run_complete(args : Array[String]) -> @lib.CmdResult {
-  if args.length() == 0 {
-    usage_die(
-      "kuu complete: missing <def.json>", "kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]",
-    )
-  }
-  let def_path = args[0]
-  let def_text = match read_file_all(def_path) {
-    Ok(s) => s
-    Err(msg) =>
-      usage_die(
-        "kuu complete: " + msg,
-        "kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]",
-      )
-  }
-  let mut before_text : String = ""
-  let mut after_text : String = ""
-  let mut i = 1
-  while i < args.length() {
-    let a = args[i]
-    if a == "--args-before" && i + 1 < args.length() {
-      before_text = args[i + 1]
-      i = i + 2
-    } else if a == "--args-after" && i + 1 < args.length() {
-      after_text = args[i + 1]
-      i = i + 2
-    } else {
-      usage_die(
-        "kuu complete: unexpected arg '" + a + "'",
-        "kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]",
-      )
-    }
-  }
-  if before_text == "" {
-    usage_die(
-      "kuu complete: missing --args-before", "kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]",
-    )
-  }
-  let before = match parse_str_array(before_text) {
-    Ok(xs) => xs
-    Err(msg) =>
-      usage_die(
-        "kuu complete: --args-before " + msg,
-        "kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]",
-      )
-  }
-  let after = if after_text == "" {
-    []
-  } else {
-    match parse_str_array(after_text) {
-      Ok(xs) => xs
-      Err(msg) =>
-        usage_die(
-          "kuu complete: --args-after " + msg,
-          "kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]",
-        )
-    }
+fn run_complete(command : Array[(String, @kuu.ResultValue)]) -> @lib.CmdResult {
+  let def_text = read_definition(string_field(command, "definition"))
+  let before = parse_str_array(
+    string_field(command, "args_before"),
+    "kuu complete: --args-before",
+  )
+  let after = match string_field_opt(command, "args_after") {
+    Some(raw) => parse_str_array(raw, "kuu complete: --args-after")
+    None => []
   }
   @lib.cmd_complete(def_text, before, after)
 }
 
-///|
-/// completion subcommand の usage (エラー時 stderr 表示の共通素材、DR-117 §6 形態 B)。
-const COMPLETION_USAGE : String = "kuu completion generate <def.json> --shell zsh|bash|fish --binary <ref> --uuid <u> [--program-name <n>]\n       kuu completion query <def.json> [--cword <N>] -- <words...>"
-
-///|
-/// `kuu completion <generate|query>` の dispatch (DR-117 §6 形態 B、findings 2026-07-23 M4)。
-fn run_completion(args : Array[String]) -> @lib.CmdResult {
-  if args.length() == 0 {
-    usage_die("kuu completion: missing sub-subcommand", COMPLETION_USAGE)
-  }
-  let sub = args[0]
-  let rest : Array[String] = []
-  for i in 1..<args.length() {
-    rest.push(args[i])
-  }
-  match sub {
-    "generate" => run_completion_generate(rest)
-    "query" => run_completion_query(rest)
-    _ =>
-      usage_die(
-        "kuu completion: unknown sub-subcommand '" + sub + "'",
-        COMPLETION_USAGE,
-      )
-  }
+fn run_validate(command : Array[(String, @kuu.ResultValue)]) -> @lib.CmdResult {
+  @lib.cmd_validate(read_definition(string_field(command, "definition")))
 }
 
-///|
-/// `kuu completion generate <def.json> --shell <s> --binary <ref> --uuid <u> [--program-name <n>]`.
-/// binary / uuid は必須 (glue 焼き込みの 2 点、DR-117 §2.5)。UUID 採番は「library の外」(findings
-/// §3.2) — kuu-cli は乱数を持たないため呼び出し側 (人 or 呼び出し script) が `$(uuidgen)` 等で
-/// 生成して渡す。program_name の既定は def JSON top-level `name` (wire.mbt 側で解決)。
-fn run_completion_generate(args : Array[String]) -> @lib.CmdResult {
-  if args.length() == 0 {
-    usage_die("kuu completion generate: missing <def.json>", COMPLETION_USAGE)
+fn run_help(command : Array[(String, @kuu.ResultValue)]) -> Unit {
+  let definitions = strings_field(command, "definition")
+  if definitions.length() == 0 {
+    print_self_help(["help"])
+    return
   }
-  let def_path = args[0]
-  let def_text = match read_file_all(def_path) {
-    Ok(s) => s
-    Err(msg) => usage_die("kuu completion generate: " + msg, COMPLETION_USAGE)
+  let def_text = read_definition(definitions[0])
+  let path = match string_field_opt(command, "path") {
+    Some(raw) => parse_str_array(raw, "kuu help: --path")
+    None => []
   }
-  let mut shell : String = ""
-  let mut binary : String = ""
-  let mut uuid : String = ""
-  let mut program_name : String? = None
-  let mut i = 1
-  while i < args.length() {
-    let a = args[i]
-    if a == "--shell" && i + 1 < args.length() {
-      shell = args[i + 1]
-      i = i + 2
-    } else if a == "--binary" && i + 1 < args.length() {
-      binary = args[i + 1]
-      i = i + 2
-    } else if a == "--uuid" && i + 1 < args.length() {
-      uuid = args[i + 1]
-      i = i + 2
-    } else if a == "--program-name" && i + 1 < args.length() {
-      program_name = Some(args[i + 1])
-      i = i + 2
-    } else {
-      usage_die(
-        "kuu completion generate: unexpected arg '" + a + "'",
-        COMPLETION_USAGE,
-      )
-    }
+  let depth = match string_field_opt(command, "depth") {
+    Some("all") => @kuu.HelpDepth::All
+    _ => @kuu.HelpDepth::Scope
   }
-  if shell == "" {
-    usage_die("kuu completion generate: missing --shell", COMPLETION_USAGE)
+  let category_mode = match string_field_opt(command, "category_mode") {
+    Some(raw) => parse_category_mode(raw)
+    None => @kuu.Default
   }
-  if binary == "" {
-    usage_die("kuu completion generate: missing --binary", COMPLETION_USAGE)
-  }
-  if uuid == "" {
-    usage_die("kuu completion generate: missing --uuid", COMPLETION_USAGE)
-  }
-  @lib.cmd_completion_generate(def_text, shell, binary, uuid, program_name)
-}
-
-///|
-/// `kuu completion query <def.json> [--cword <N>] -- <words...>`.
-/// words は補完対象コマンド名を先頭に含む全量 (DR-117 §3.4)。cword 省略 / 負値 / 範囲外 =
-/// 行末補完縮退 (DR-117 §3.3、completion_query 内部で処理)。
-fn run_completion_query(args : Array[String]) -> @lib.CmdResult {
-  if args.length() == 0 {
-    usage_die("kuu completion query: missing <def.json>", COMPLETION_USAGE)
-  }
-  let def_path = args[0]
-  let def_text = match read_file_all(def_path) {
-    Ok(s) => s
-    Err(msg) => usage_die("kuu completion query: " + msg, COMPLETION_USAGE)
-  }
-  let mut cword : Int? = None
-  let words : Array[String] = []
-  let mut i = 1
-  let mut seen_dd = false
-  while i < args.length() {
-    let a = args[i]
-    if seen_dd {
-      words.push(a)
-      i = i + 1
-    } else if a == "--" {
-      seen_dd = true
-      i = i + 1
-    } else if a == "--cword" && i + 1 < args.length() {
-      let s = args[i + 1]
-      match parse_int_opt(s) {
-        Some(n) => cword = Some(n)
-        None =>
-          usage_die(
-            "kuu completion query: --cword expects an integer, got '" + s + "'",
-            COMPLETION_USAGE,
-          )
-      }
-      i = i + 2
-    } else {
-      // dd 前の非フラグ token = words の先頭 (以降は全て words)
-      words.push(a)
-      seen_dd = true
-      i = i + 1
-    }
-  }
-  @lib.cmd_completion_query(def_text, words, cword)
-}
-
-///|
-/// ASCII 10 進整数 parser (負値可)。空文字・非数字は None。overflow は約 214748364 以下で
-/// safe (Int の範囲、run_completion_query で cword に使う小さな値のみ想定)。
-fn parse_int_opt(s : String) -> Int? {
-  let arr = s.to_array()
-  if arr.length() == 0 {
-    return None
-  }
-  let mut i = 0
-  let mut neg = false
-  if arr[0] == '-' {
-    neg = true
-    i = 1
-    if arr.length() == 1 {
-      return None
-    }
-  }
-  let mut acc : Int = 0
-  while i < arr.length() {
-    let code = arr[i].to_int()
-    if code < '0'.to_int() || code > '9'.to_int() {
-      return None
-    }
-    let d = code - '0'.to_int()
-    if acc > 214748364 {
-      return None
-    }
-    acc = acc * 10 + d
-    i = i + 1
-  }
-  Some(if neg { -acc } else { acc })
-}
-
-///|
-/// help subcommand の usage (エラー時 stderr 表示の共通素材)。
-const HELP_USAGE : String = "kuu help [<def.json>] [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>] [--format text|json] [--binding name=value]... [--show-hidden] [--program-name <name>] [--style-value-structure auto|inline|detail] [--style-types auto|aggregate|inline] [--style-origin merge|separate_section|reference|omit] [--style-template <string>]"
-
-///|
-/// `kuu help <def.json> [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>]`
-///
-/// - `--path`: root-first の command path (JSON string array、例 `["remote","add"]`)。既定は `[]` (ルート)
-/// - `--depth`: `scope` (既定、選択 scope の 1 層) / `all` (子孫 scope を再帰埋め込み、DR-113 §4.4)
-/// - `--category-mode`: `default` (既定) / `all` / `named:<name>` (DR-113 §1 の 3 分岐、HIP-META-Q13=a)
-///
-/// 出力は spec の help wire model (schema `$defs/helpModel`) を stdout に emit する canonical JSON。
-/// 人間向けの整形は別 issue (spec docs/issue/2026-07-18-help-renderer-design.md) にスコープアウト。
-fn run_help(args : Array[String]) -> @lib.CmdResult {
-  // args[0] は `main` からの経路で既に非空 (先頭は <def.json>)。
-  let def_path = args[0]
-  let def_text = match read_file_all(def_path) {
-    Ok(s) => s
-    Err(msg) => usage_die("kuu help: " + msg, HELP_USAGE)
-  }
-  let mut path : Array[String] = []
-  let mut depth : @kuu.HelpDepth = @kuu.Scope
-  let mut category_mode : @kuu.HelpCategoryMode = @kuu.Default
-  // DR-115 render options — --format text で canonical レンダラのテキスト出力に切替、既定 json は
-  // 現行の canonical JSON model 出力を維持 (help-conformance gate が JSON を前提としているため、
-  // 既定切替は kawaz 裁定待ち = 完了報告の 👺 候補)。
-  let mut format : String = "json"
-  let mut show_hidden : Bool = false
-  let mut program_name_opt : String? = None
-  let bindings : Map[String, String] = Map([])
-  let mut style_template : String? = None
-  let mut style_vs : String? = None
-  let mut style_types : String? = None
-  let mut style_origin : String? = None
-  let mut i = 1
-  while i < args.length() {
-    let a = args[i]
-    if a == "--path" && i + 1 < args.length() {
-      path = match parse_str_array(args[i + 1]) {
-        Ok(xs) => xs
-        Err(msg) => usage_die("kuu help: --path " + msg, HELP_USAGE)
-      }
-      i = i + 2
-    } else if a == "--depth" && i + 1 < args.length() {
-      depth = match args[i + 1] {
-        "scope" => @kuu.Scope
-        "all" => @kuu.All
-        other =>
-          usage_die(
-            "kuu help: --depth expects 'scope' or 'all', got '" + other + "'",
-            HELP_USAGE,
-          )
-      }
-      i = i + 2
-    } else if a == "--category-mode" && i + 1 < args.length() {
-      category_mode = match parse_category_mode(args[i + 1]) {
-        Ok(cm) => cm
-        Err(msg) => usage_die("kuu help: --category-mode " + msg, HELP_USAGE)
-      }
-      i = i + 2
-    } else if a == "--format" && i + 1 < args.length() {
-      let v = args[i + 1]
-      if v != "text" && v != "json" {
-        usage_die(
-          "kuu help: --format expects 'text' or 'json', got '" + v + "'",
-          HELP_USAGE,
-        )
-      }
-      format = v
-      i = i + 2
-    } else if a == "--show-hidden" {
-      show_hidden = true
-      i = i + 1
-    } else if a == "--program-name" && i + 1 < args.length() {
-      program_name_opt = Some(args[i + 1])
-      i = i + 2
-    } else if a == "--binding" && i + 1 < args.length() {
-      match split_once(args[i + 1], '=') {
+  if string_field_opt(command, "format") == Some("text") {
+    let bindings : Map[String, String] = Map([])
+    for raw in strings_field(command, "binding") {
+      match split_once(raw, '=') {
         Some(pair) => bindings.set(pair.0, pair.1)
-        None =>
-          usage_die(
-            "kuu help: --binding expects name=value, got '" + args[i + 1] + "'",
-            HELP_USAGE,
-          )
+        None => die_with("kuu help: --binding expects NAME=VALUE", 2)
       }
-      i = i + 2
-    } else if a == "--style-template" && i + 1 < args.length() {
-      style_template = Some(args[i + 1])
-      i = i + 2
-    } else if a == "--style-value-structure" && i + 1 < args.length() {
-      style_vs = Some(args[i + 1])
-      i = i + 2
-    } else if a == "--style-types" && i + 1 < args.length() {
-      style_types = Some(args[i + 1])
-      i = i + 2
-    } else if a == "--style-origin" && i + 1 < args.length() {
-      style_origin = Some(args[i + 1])
-      i = i + 2
-    } else {
-      usage_die("kuu help: unexpected arg '" + a + "'", HELP_USAGE)
     }
-  }
-  if format == "text" {
-    let render_opts : @lib.RenderOpts = {
-      program_name: program_name_opt,
-      show_hidden,
+    let opts : @lib.RenderOpts = {
+      program_name: string_field_opt(command, "program_name"),
+      show_hidden: bool_field(command, "show_hidden", false),
       bindings,
       style: {
-        template: style_template,
-        value_structure_style: style_vs,
-        types_style: style_types,
-        origin_style: style_origin,
+        template: string_field_opt(command, "style_template"),
+        value_structure_style: string_field_opt(
+          command,
+          "style_value_structure",
+        ),
+        types_style: string_field_opt(command, "style_types"),
+        origin_style: string_field_opt(command, "style_origin"),
       },
       category_mode,
     }
-    @lib.cmd_help_text(def_text, path, depth, category_mode, render_opts)
+    emit_payload(@lib.cmd_help_text(def_text, path, depth, category_mode, opts))
   } else {
-    @lib.cmd_help(def_text, path, depth, category_mode)
+    emit_payload(@lib.cmd_help(def_text, path, depth, category_mode))
   }
 }
 
-///|
-/// `--category-mode` の値解析: `default` / `all` / `named:<name>` を受ける。`named:` の後ろは
-/// 任意文字列 (空文字は不採用 = usage error、DR-113 §1 が named の identity として空 name を
-/// 認めない — schema `named` 参照)。
-fn parse_category_mode(s : String) -> Result[@kuu.HelpCategoryMode, String] {
-  if s == "default" {
-    Ok(@kuu.Default)
-  } else if s == "all" {
-    Ok(@kuu.All)
-  } else if s.length() >= 6 && s[0:6].to_owned() == "named:" {
-    let name = s[6:].to_owned()
-    if name == "" {
-      Err("'named:' requires a non-empty name")
-    } else {
-      Ok(@kuu.Named(name))
+fn run_completion(command : Array[(String, @kuu.ResultValue)]) -> Unit {
+  match object_field_opt(command, "generate") {
+    Some(generate) =>
+      emit_payload(
+        @lib.cmd_completion_generate(
+          read_definition(string_field(generate, "definition")),
+          string_field(generate, "shell"),
+          string_field(generate, "binary"),
+          string_field(generate, "uuid"),
+          string_field_opt(generate, "program_name"),
+        ),
+      )
+    None =>
+      match object_field_opt(command, "query") {
+        Some(query) =>
+          emit_payload(
+            @lib.cmd_completion_query(
+              read_definition(string_field(query, "definition")),
+              strings_field(query, "words"),
+              int_field_opt(query, "cword"),
+            ),
+          )
+        None => die_with("kuu completion: no command was selected", 2)
+      }
+  }
+}
+
+fn result_repr(value : @kuu.ResultValue) -> String {
+  match value {
+    @abi.Scalar(@abi.String(text)) => "\"" + text + "\""
+    @abi.Scalar(@abi.Bool(value)) => if value { "true" } else { "false" }
+    @abi.Scalar(@abi.Number(value)) => value.to_string()
+    @abi.Array(values) => {
+      let parts : Array[String] = []
+      for item in values { parts.push(result_repr(item)) }
+      "[" + parts.join(",") + "]"
     }
-  } else {
-    Err("expects 'default' | 'all' | 'named:<name>', got '" + s + "'")
+    @abi.Object(fields) => {
+      let parts : Array[String] = []
+      for field in fields { parts.push(field.0 + ":" + result_repr(field.1)) }
+      "{" + parts.join(",") + "}"
+    }
   }
 }
 
-///|
-/// `kuu validate <def.json>`。余剰引数 (2 番目以降の positional) は usage error (M-5、
-/// codex #1、統括裁定 2026-07-16): 「validate は path 先頭だけ読み余剰引数を検査しない」
-/// バグを潰す。
-fn run_validate(args : Array[String]) -> @lib.CmdResult {
-  if args.length() == 0 {
-    usage_die("kuu validate: missing <def.json>", "kuu validate <def.json>")
+fn as_object(
+  value : @kuu.ResultValue,
+  label : String,
+) -> Array[(String, @kuu.ResultValue)] {
+  match value {
+    @abi.Object(fields) => fields
+    _ => die_with("kuu: invalid embedded result for " + label, 2)
   }
-  if args.length() > 1 {
-    usage_die(
-      "kuu validate: unexpected extra arg '" + args[1] + "'",
-      "kuu validate <def.json>",
-    )
-  }
-  let def_text = match read_file_all(args[0]) {
-    Ok(s) => s
-    Err(msg) => usage_die("kuu validate: " + msg, "kuu validate <def.json>")
-  }
-  @lib.cmd_validate(def_text)
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// tiny helpers
-// ═════════════════════════════════════════════════════════════════════════════
-
-///|
-/// Usage error は stderr にメッセージ + subcommand usage を書き、exit 2 で終了する。旧
-/// `usage_err` は JSON envelope を stdout に返していたが、M-5 の「stdout=machine JSON only、
-/// stderr=human text」規約に合わせて完全に stderr へ振る (統括裁定 2026-07-16)。返り値は `T`
-/// (never return) — 呼び出し側の `let ... = match ... {} `arm から型を揃えて呼べる。
-fn[T] usage_die(msg : String, sub_usage : String) -> T {
-  eprintln(msg)
-  eprintln("Usage: " + sub_usage)
-  die(2)
+fn field_opt(
+  fields : Array[(String, @kuu.ResultValue)],
+  name : String,
+) -> @kuu.ResultValue? {
+  for field in fields {
+    if field.0 == name {
+      return Some(field.1)
+    }
+  }
+  None
 }
 
-///|
-fn parse_str_array(s : String) -> Result[Array[String], String] {
-  let j = @json.parse(s) catch { _ => return Err("value is not valid JSON") }
-  match j {
-    Array(items) => {
+fn object_field_opt(
+  fields : Array[(String, @kuu.ResultValue)],
+  name : String,
+) -> Array[(String, @kuu.ResultValue)]? {
+  for field in fields {
+    if field.0 == name {
+      match field.1 {
+        @abi.Object(value) => return Some(value)
+        _ => ()
+      }
+    }
+  }
+  None
+}
+
+fn scalar_string(value : @kuu.ResultValue, name : String) -> String {
+  match value {
+    @abi.Scalar(@abi.String(text)) => text
+    _ => die_with("kuu: embedded result field '" + name + "' is not a string", 2)
+  }
+}
+
+fn string_field(
+  fields : Array[(String, @kuu.ResultValue)],
+  name : String,
+) -> String {
+  match field_opt(fields, name) {
+    Some(value) => scalar_string(value, name)
+    None => die_with("kuu: embedded result is missing '" + name + "'", 2)
+  }
+}
+
+fn string_field_opt(
+  fields : Array[(String, @kuu.ResultValue)],
+  name : String,
+) -> String? {
+  match field_opt(fields, name) {
+    Some(value) => Some(scalar_string(value, name))
+    None => None
+  }
+}
+
+fn bool_field(
+  fields : Array[(String, @kuu.ResultValue)],
+  name : String,
+  default : Bool,
+) -> Bool {
+  match field_opt(fields, name) {
+    Some(@abi.Scalar(@abi.Bool(value))) => value
+    Some(_) => die_with("kuu: embedded result field '" + name + "' is not boolean", 2)
+    None => default
+  }
+}
+
+fn int_field_opt(
+  fields : Array[(String, @kuu.ResultValue)],
+  name : String,
+) -> Int? {
+  match field_opt(fields, name) {
+    Some(@abi.Scalar(@abi.Number(value))) => Some(value.to_int())
+    Some(_) => die_with("kuu: embedded result field '" + name + "' is not numeric", 2)
+    None => None
+  }
+}
+
+fn strings_field(
+  fields : Array[(String, @kuu.ResultValue)],
+  name : String,
+) -> Array[String] {
+  match field_opt(fields, name) {
+    None => []
+    Some(@abi.Array(values)) => {
       let out : Array[String] = []
-      for it in items {
-        match it {
-          String(x) => out.push(x)
-          _ => return Err("array must contain only strings")
+      for value in values {
+        out.push(scalar_string(value, name))
+      }
+      out
+    }
+    Some(value) => [scalar_string(value, name)]
+  }
+}
+
+fn config_file_field(
+  fields : Array[(String, @kuu.ResultValue)],
+) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  match field_opt(fields, "config_file") {
+    Some(@abi.Array(rows)) =>
+      for row in rows {
+        match row {
+          @abi.Array(cells) => {
+            let mut path : String? = None
+            let mut value : String? = None
+            for cell in cells {
+              match cell {
+                @abi.Object(object) =>
+                  match string_field_opt(object, "path") {
+                    Some(text) => path = Some(text)
+                    None =>
+                      match string_field_opt(object, "value") {
+                        Some(text) => value = Some(text)
+                        None => ()
+                      }
+                  }
+                @abi.Scalar(@abi.String(text)) => value = Some(text)
+                _ => ()
+              }
+            }
+            match (path, value) {
+              (Some(p), Some(v)) => out.push((p, v))
+              _ => die_with("kuu: invalid --config-file result", 2)
+            }
+          }
+          _ => die_with("kuu: invalid --config-file row", 2)
         }
       }
-      Ok(out)
-    }
-    _ => Err("value is not a JSON array")
+    Some(_) => die_with("kuu: invalid --config-file result", 2)
+    None => ()
+  }
+  out
+}
+
+fn read_definition(path : String) -> String {
+  match read_file_all(path) {
+    Ok(text) => text
+    Err(message) => die_with(message, 1)
   }
 }
 
-///|
 fn read_file_all(path : String) -> Result[String, String] {
+  if path == "-" {
+    return read_stdin_all()
+  }
   Ok(@fs.read_file_to_string(path)) catch {
     _ => Err("cannot read '" + path + "'")
   }
 }
 
-///|
-/// Usage text (help 表示 / エラー時 usage の共通素材)。
-fn usage_text() -> String {
-  let text =
-    #|kuu — parse / complete / validate against a kuu definition (JSON in, JSON out).
-    #|
-    #|Usage:
-    #|  kuu parse       <def.json> [options] [--] <args...>
-    #|  kuu complete    <def.json> --args-before <json-array> [--args-after <json-array>]
-    #|  kuu completion  generate <def.json> --shell zsh|bash|fish --binary <ref> --uuid <u> [--program-name <n>]
-    #|  kuu completion  query    <def.json> [--cword <N>] -- <words...>
-    #|  kuu validate    <def.json>
-    #|  kuu help        [<def.json> [--path <json-array>] [--depth scope|all] [--category-mode default|all|named:<name>]]
-    #|
-    #|parse options (value-source control; default = the real environment, DR-109 §6):
-    #|  --no-env             ignore real environment variables
-    #|  --env k=v            inject/override an env var (repeatable)
-    #|  --no-config          disable config-file reading
-    #|  --config <json|file> supply the config object directly (JSON text or a JSON file path);
-    #|                       the provider returns the same value for every requested path
-    #|  --config-file <path> <json|file>
-    #|                       inject a path→config map entry (repeatable, 2-arg form); the
-    #|                       provider returns the mapped value on that path and None elsewhere
-    #|  --tty <json>         pin tty observations, e.g. '{"stdout":{"terminal":true,"cygwin":false}}'
-    #|
-    #|  Note: --no-config / --config / --config-file are mutually exclusive.
-    #|
-    #|help options (DR-113 help_query capability + DR-115 canonical renderer):
-    #|  --path <json-array>          root-first command path (default []); e.g. '["remote","add"]'
-    #|  --depth scope|all            'scope' (default) = selected scope only; 'all' = recursively embed subscopes
-    #|  --category-mode ...          'default' (default) | 'all' | 'named:<name>'
-    #|  --format text|json           output format (default 'json' = canonical model wire; 'text' = DR-115 renderer)
-    #|  --show-hidden                include hidden entries (entry-level; group hidden is untouched, DR-115 §4)
-    #|  --program-name <name>        override program name shown in Usage: (default = command_path[0])
-    #|  --binding name=value         supply a binding for {name} interpolation (repeatable, DR-115 §3)
-    #|  --style-value-structure ...  auto|inline|detail (DR-115 §5.1)
-    #|  --style-types ...            auto|aggregate|inline (DR-115 §5.2)
-    #|  --style-origin ...           merge|separate_section|reference|omit (DR-115 §5.3)
-    #|  --style-template <string>    override the section skeleton template (DR-115 §2)
-    #|
-    #|  Note: 'kuu help' with no arguments prints this usage; provide <def.json> to run a help query.
-    #|
-    #|completion options (DR-117 §6 形態 B; UUID / binary は呼び出し側注入 — findings §3.2):
-    #|  generate --shell zsh|bash|fish   target shell
-    #|  generate --binary <ref>           glue が問い合わせるバイナリ参照 (絶対パス or 名前)
-    #|  generate --uuid <u>               env × argv 二箇所一致トークン (`$(uuidgen)` 等)
-    #|  generate --program-name <n>       補完対象コマンド名 (default = def top-level `name`)
-    #|  query    --cword <N>              カーソル単語 index (0-origin、省略/範囲外 = 行末補完)
-    #|  query    -- <words...>            補完対象コマンド名を先頭に含む全量 words (DR-117 §3.4)
-    #|
-    #|Exit codes: 0=success, 1=parse/validate/help failure, 2=usage error.
-    #|Output channels: machine JSON is on stdout; human text (usage / errors) is on stderr.
-  text
+fn read_stdin_all() -> Result[String, String] {
+  let bytes : Array[Byte] = []
+  while true {
+    let chunk = Bytes::make(4096, 0)
+    let count = c_read(0, chunk, chunk.length())
+    if count < 0 {
+      return Err("cannot read standard input")
+    }
+    if count == 0 {
+      break
+    }
+    for i in 0..<count {
+      bytes.push(chunk[i])
+    }
+  }
+  Ok(@utf8.decode_lossy(Bytes::from_array(bytes)[:]))
 }
 
-///|
-/// Usage を stderr に書き出す (引数なし / unknown subcommand の human 経路)。
-fn print_usage_stderr() -> Unit {
-  eprintln(usage_text())
+fn config_value(raw : String, label : String) -> @kuu.ConfigVal {
+  let json = @json.parse(raw) catch {
+    _ =>
+      match read_file_all(raw) {
+        Ok(text) =>
+          @json.parse(text) catch {
+            _ => die_with(label + " is neither JSON nor a readable JSON file", 2)
+          }
+        Err(_) => die_with(label + " is neither JSON nor a readable JSON file", 2)
+      }
+  }
+  @kuu.config_from_json(json)
+}
+
+fn tty_from_json(j : Json) -> Result[Map[String, @kuu.TtyObs], String] {
+  match j {
+    Object(object) => {
+      let result : Map[String, @kuu.TtyObs] = Map([])
+      for name, value in object {
+        match value {
+          Object(fields) => {
+            let terminal = match fields.get("terminal") {
+              Some(True) => true
+              Some(False) => false
+              _ => return Err("stream '" + name + "' needs boolean 'terminal'")
+            }
+            let cygwin = match fields.get("cygwin") {
+              Some(True) => true
+              Some(False) | None => false
+              _ => return Err("stream '" + name + "' has non-boolean 'cygwin'")
+            }
+            result.set(name, @kuu.tty_obs(terminal, cygwin))
+          }
+          _ => return Err("stream '" + name + "' value must be an object")
+        }
+      }
+      Ok(result)
+    }
+    _ => Err("value must be a JSON object of streams")
+  }
+}
+
+fn split_once(s : String, separator : Char) -> (String, String)? {
+  let mut index = -1
+  let mut current = 0
+  for char in s {
+    if char == separator && index < 0 {
+      index = current
+    }
+    current = current + 1
+  }
+  if index < 0 {
+    None
+  } else {
+    Some((s[0:index].to_owned(), s[index + 1:].to_owned()))
+  }
+}
+
+fn parse_str_array(raw : String, label : String) -> Array[String] {
+  let json = @json.parse(raw) catch {
+    _ => die_with(label + " is not valid JSON", 2)
+  }
+  match json {
+    Array(items) => {
+      let out : Array[String] = []
+      for item in items {
+        match item {
+          String(text) => out.push(text)
+          _ => die_with(label + " must contain only strings", 2)
+        }
+      }
+      out
+    }
+    _ => die_with(label + " must be a JSON array", 2)
+  }
+}
+
+fn parse_category_mode(raw : String) -> @kuu.HelpCategoryMode {
+  if raw == "default" {
+    @kuu.Default
+  } else if raw == "all" {
+    @kuu.All
+  } else if raw.length() > 6 && raw[0:6].to_owned() == "named:" {
+    @kuu.Named(raw[6:].to_owned())
+  } else {
+    die_with("kuu help: invalid --category-mode '" + raw + "'", 2)
+  }
+}
+
+fn[T] die_with(message : String, code : Int) -> T {
+  eprintln(message)
+  die(code)
 }

@@ -62,23 +62,29 @@ setup:
     printf "impl/mbt: creating symlink deps/kuu.mbt -> ../../../../../kuu.mbt/main\n"
     ln -sfn ../../../../../kuu.mbt/main "$link"
 
+# ---------- generated source ----------
+
+# kuu-cli 自身の definition を native binary に埋め込む MoonBit string literal へ変換する。
+generate-self-definition:
+    python3 -c 'import json, pathlib; src=pathlib.Path("{{MBT_ROOT}}/cli/kuu-cli.def.json"); version=pathlib.Path("{{MBT_ROOT}}/../../VERSION").read_text().strip(); dst=pathlib.Path("{{MBT_ROOT}}/cli/src/main/def_embedded.mbt"); text=src.read_text(); dst.write_text("// Generated from cli/kuu-cli.def.json and VERSION by just generate-self-definition.\nconst SELF_DEFINITION_JSON : String = " + json.dumps(text, ensure_ascii=True) + "\nconst SELF_VERSION : String = " + json.dumps(version) + "\n")'
+
 # ---------- lint / test ----------
 
 # moon fmt --check は現在の moon toolchain (0.1.20260709) と formatter の間で
 # `options("is-main":true)` vs `pkgtype(kind:"executable")` の書式が食い違うため一時 skip。
 # 別 issue で追跡 (impl/mbt/README.md の Known issues 参照)。
-lint: setup
+lint: setup generate-self-definition
     cd "{{MBT_ROOT}}" && moon check --target native
 
 # cli パッケージのみ実行 (deps/kuu.mbt の 346 test は kuu.mbt 側の関心、ここでは走らせない)。
-test: setup
+test: setup generate-self-definition
     cd "{{MBT_ROOT}}" && moon test cli/src/lib --target native
     cd "{{MBT_ROOT}}" && just self-dogfood
     cd "{{MBT_ROOT}}" && just e2e
     cd "{{MBT_ROOT}}" && just smoke
 
 # kuu-cli 自身の definition を kuu.mbt で decode/lowering し、代表 argv の result shape を固定する。
-self-dogfood:
+self-dogfood: generate-self-definition
     cd "{{MBT_ROOT}}" && moon build --target native
     KUU_CLI="{{MBT_ROOT}}/_build/native/debug/build/kawaz/kuu-cli-mbt/main/main.exe" \
       KUU_CLI_DEF="{{MBT_ROOT}}/cli/kuu-cli.def.json" \
@@ -88,7 +94,7 @@ self-dogfood:
 # bash 関数直呼び (mock binary 経由の form-A end-to-end) + 形態 B `kuu completion query` の
 # 候補列挙。fish 未インストール環境では該当 assertion を skip する。zsh 関数直呼びは compinit
 # 依存で CI 化が難しく本 smoke ではスコープ外 (findings §5.2 に従い段 1 tmux 実端末マトリクスへ委ねる)。
-smoke:
+smoke: generate-self-definition
     cd "{{MBT_ROOT}}" && moon build --target native
     KUU_CLI="{{MBT_ROOT}}/_build/native/debug/build/kawaz/kuu-cli-mbt/main/main.exe" \
       bash "{{MBT_ROOT}}/tests/smoke/completion_smoke.sh"
@@ -113,7 +119,7 @@ smoke:
 # 全 fixture 走査の conformance gate 化は別サイクル、統括裁定)。ここでは fixture 側の args / 期待
 # 代表 field を「そのまま」読んで pin する層に留める。
 [script]
-e2e:
+e2e: generate-self-definition
     # binary path 固定 (codex #1 m-1 修正、統括裁定 2026-07-16): `moon build --target native`
     # は default = debug build なので、出力は `_build/native/debug/build/...`。旧実装は release
     # path を先に探して fallback `find|head -1` で拾っていたが、workspace に stale build や
@@ -257,7 +263,7 @@ e2e:
 #
 # skip 対象: query が parse 以外の fixture (complete / definition_error は envelope 未確定領域)。
 [script]
-conformance:
+conformance: generate-self-definition
     cd "{{MBT_ROOT}}" && moon build --target native
     bin="{{MBT_ROOT}}/_build/native/debug/build/kawaz/kuu-cli-mbt/main/main.exe"
     if [[ ! -x "$bin" ]]; then
@@ -400,7 +406,7 @@ conformance:
 # の通常出力経路で outcome フィールドとして返る、別コマンドやエラー出力の突き合わせ不要
 # なことを実機確認済み)。
 [script]
-help-conformance:
+help-conformance: generate-self-definition
     cd "{{MBT_ROOT}}" && moon build --target native
     bin="{{MBT_ROOT}}/_build/native/debug/build/kawaz/kuu-cli-mbt/main/main.exe"
     if [[ ! -x "$bin" ]]; then
