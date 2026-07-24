@@ -7,9 +7,11 @@ set -euo pipefail
 tmp_def=$(mktemp)
 trap 'rm -f "$tmp_def"' EXIT
 
-# parse_definition rejects the editor-facing JSON Schema annotation. Remove
-# only that inert key at the application boundary.
-jq 'del(."$schema")' "$KUU_CLI_DEF" >"$tmp_def"
+# parse_definition rejects the editor-facing JSON Schema annotation.
+# TODO: Remove the on_failure deletion after kuu.mbt implements the existing
+# wire vocabulary. The source definition remains the canonical complete form.
+jq 'del(."$schema") | (.options[] | select(.name == "version")) |= del(.on_failure)' \
+  "$KUU_CLI_DEF" >"$tmp_def"
 
 assert_eq() {
   local label=$1 got=$2 want=$3
