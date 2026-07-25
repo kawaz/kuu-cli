@@ -113,12 +113,13 @@ smoke: generate-self-definition
 # C-1 (front_door 後段処理欠落) を見逃す原因になった。新実装は `.cases[] | select(.id==$id)` で
 # **args も expected も fixture 本体から jq で読む** ため、fixture 側の変更は必ず e2e に反映される。
 #
-# 現在の pin 対象 (5 case、代表軸を網羅):
-#   - multiple-parse/separator-typed :: option-separator-number-success   (separator + type parse)
-#   - export-key/rename              :: rename-projection                 (export_key: result rename)
-#   - export-key/collision           :: co-exposure-collision             (Ambiguous 昇格 = C-1 の再発検知軸)
-#   - inheritable-parse/basic        :: ancestor-inherit-flowdown         (resolve 相の inherit 流下 = C-1 の再発検知軸)
-#   - alias-parse/deprecated         :: deprecated-entry-warns            (構造化 warnings + sentinel 除外 = M-1 の再発検知軸)
+# 現在の pin 対象 (6 case、代表軸を網羅):
+#   - multiple-parse/separator-typed        :: option-separator-number-success (separator + type parse)
+#   - export-key/rename                     :: rename-projection               (export_key: result rename)
+#   - export-key/collision                  :: mapped-pair-shares-key          (DR-120 definition-error の (element, kind) 全列挙)
+#   - path-search/variable-arity-ambiguous  :: color-arity-vs-name-receptacle  (構造的 Ambiguous = C-1 の再発検知軸)
+#   - inheritable-parse/basic               :: ancestor-inherit-flowdown       (resolve 相の inherit 流下 = C-1 の再発検知軸)
+#   - alias-parse/deprecated                :: deprecated-entry-warns          (構造化 warnings + sentinel 除外 = M-1 の再発検知軸)
 #
 # **spec fixture の緩比較全体 (CONFORMANCE.md §3) を再現するのはスコープ外** (v1 決定リスト 8、
 # 全 fixture 走査の conformance gate 化は別サイクル、統括裁定)。ここでは fixture 側の args / 期待
@@ -205,14 +206,32 @@ e2e: generate-self-definition
               "$(jq -r --arg id "$id" '.cases[] | select(.id==$id) | .expect.effects[0].entity' "$fixture")"
     printf "e2e OK: rename.json %s -> success, result=%s, entity=port\n" "$id" "$(jq -c '.result' <<<"$out")"
 
-    # ── case 3: export-key/collision :: co-exposure-collision (Ambiguous 昇格) ──
-    # front_door.parse が spec DR-021 → DR-073 の export-key 共露出昇格を含むかを CLI 経由で pin。
-    # C-1 の再発検知軸: 玄関 API が薄い parse_tree wrapper に退化すると Success を返して e2e が silently
-    # 通ってしまう構造 (codex #1 の C-1 発見の原因) が再発しないことを確認する。fixture 期待の
-    # interpretations 個数と CLI 出力の interpretations 配列長を比較 (JSON 形の詳細は wire.mbt の
-    # 「PoC 仮置き #1」で未確定なので長さで pin)。
+    # ── case 3: export-key/collision :: mapped-pair-shares-key (DR-120 definition-error) ──
+    # 1 結果スコープ・1 露出キー・1 値セル (DR-120 §1) の検査が parse_definition に載っていることを
+    # CLI 経由で pin。定義の静的検査なので args は無く、`kuu parse <def>` を argv 無しで叩けば発火する。
+    # 比較単位は DR-082 §1 の `(element, kind)` 集合 (message / hint は非比較) — 衝突に関与する要素
+    # ごとに 1 件を全列挙する §5 の粒度が守られているかも同時に見る (代表 1 件へ畳む実装は落ちる)。
     fixture="{{FIXTURES}}/export-key/collision.json"
-    id="co-exposure-collision"
+    id="mapped-pair-shares-key"
+    jq '.definition' "$fixture" > "$def_only"
+    set +e
+    out=$("$bin" parse "$def_only")
+    ec=$?
+    set -e
+    assert_eq "$id exit" "$ec" "1"
+    assert_eq "$id errors" \
+              "$(jq -cS '[.errors[] | {element, kind}] | sort' <<<"$out")" \
+              "$(jq -cS --arg id "$id" '[.cases[] | select(.id==$id) | .expect.errors[] | {element, kind}] | sort' "$fixture")"
+    printf "e2e OK: collision.json %s -> definition-error, errors=%s\n" "$id" "$(jq -c '[.errors[] | {element, kind}]' <<<"$out")"
+
+    # ── case 3b: path-search/variable-arity-ambiguous :: color-arity-vs-name-receptacle ──
+    # 構造的に複数の完全経路が立つ Ambiguous (DR-038) を CLI 経由で pin。DR-120 §7 で「衝突由来の
+    # ambiguous」が消えた後も残る唯一の Ambiguous 供給源であり、`interpretations` は各解釈の parse 相
+    # result ビューそのもの (provenance 面は持たない、DR-120 §8) — ビュー自体が解釈を区別することを
+    # 実出力で確認する。C-1 の再発検知軸 (玄関 API が薄い parse_tree wrapper に退化すると Success を
+    # 返して e2e が silently 通る) はこの case が引き継ぐ。
+    fixture="{{FIXTURES}}/path-search/variable-arity-ambiguous.json"
+    id="color-arity-vs-name-receptacle"
     jq '.definition' "$fixture" > "$def_only"
     mapfile -t args < <(read_case_args "$fixture" "$id")
     # ambiguous は wire exit code 1 だが e2e は成功扱いにするため subshell + $? を素直に取る
@@ -222,10 +241,13 @@ e2e: generate-self-definition
     set -e
     assert_eq "$id outcome" "$(jq -r '.outcome' <<<"$out")" "ambiguous"
     assert_eq "$id exit"    "$ec" "1"
-    got_len=$(jq -r '.interpretations | length' <<<"$out")
-    want_len=$(jq -r --arg id "$id" '.cases[] | select(.id==$id) | .expect.interpretations | length' "$fixture")
-    assert_eq "$id interpretations.length" "$got_len" "$want_len"
-    printf "e2e OK: collision.json %s -> ambiguous, interpretations.length=%s\n" "$id" "$got_len"
+    # 解釈の並び順は spec 非規範 (CONFORMANCE §3 は集合比較) なので、正規化してから比較する。
+    # 2 段パイプ: 1 段目の `-S` で object キー順を正規化し、2 段目で正規化済み JSON 文字列で整列。
+    canon_interps() { jq -cS '.interpretations' | jq -cS 'sort_by(tojson)'; }
+    assert_eq "$id interpretations" \
+              "$(canon_interps <<<"$out")" \
+              "$(read_case_expect "$fixture" "$id" '.' | canon_interps)"
+    printf "e2e OK: variable-arity-ambiguous.json %s -> ambiguous, interpretations=%s\n" "$id" "$(jq -c '.interpretations' <<<"$out")"
 
     # ── case 4: inheritable-parse/basic :: ancestor-inherit-flowdown (resolve 相の inherit 流下) ──
     # front_door.resolve が値源ラダーの inherit 席を子 scope まで流下させるかを CLI 経由で pin。
