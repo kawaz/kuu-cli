@@ -125,7 +125,7 @@ fn print_self_help(path : Array[String]) -> Unit {
 
 fn dispatch(result : @kuu.ResultValue) -> Unit {
   let root = as_object(result, "root result")
-  if help_requested(root) {
+  if bool_field(root, "show_help", false) {
     print_self_help(selected_command_path(root))
     return
   }
@@ -156,25 +156,6 @@ fn dispatch(result : @kuu.ResultValue) -> Unit {
           }
       }
   }
-}
-
-/// `--help` が立っているかを、同名キーの取り違えなしに判定する。
-///
-/// result の object は `Array[(String, ResultValue)]` で、**同じキーが複数並びうる**。
-/// kuu-cli の場合 `--help` option と `help` command がどちらも "help" を名乗るため、
-/// `kuu help --help` の result は `[("help", Bool(true)), ("help", Object{...})]` になる。
-/// 先頭一致で拾う `field_opt` では「option の bool」と「command の kv」を取り違えるので、
-/// ここは全エントリを走査して **bool として立っているもの**だけを見る。
-fn help_requested(fields : Array[(String, @kuu.ResultValue)]) -> Bool {
-  for field in fields {
-    if field.0 == "help" {
-      match field.1 {
-        @abi.Scalar(@abi.Bool(true)) => return true
-        _ => ()
-      }
-    }
-  }
-  false
 }
 
 /// help を出す対象の command path を result から導出する。

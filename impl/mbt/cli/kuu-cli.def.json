@@ -8,6 +8,7 @@
       "type": "help",
       "long": true,
       "global": true,
+      "export_key": "show_help",
       "help": "Show help for the selected command."
     },
     {
