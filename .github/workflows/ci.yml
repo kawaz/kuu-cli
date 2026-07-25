@@ -22,14 +22,14 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: kawaz/kuu.mbt
-          ref: b23d9c5dd29663f656842c33ca6bc8a9ce86e317
+          ref: 66bb932f265464b9083e9b0852dc6f6720038b76
           path: impl/mbt/deps/kuu.mbt
 
       - name: Checkout kuu spec fixtures (SHA-pinned)
         uses: actions/checkout@v7
         with:
           repository: kawaz/kuu
-          ref: 7268f01d1f5480941ece621a2b49852257721c52
+          ref: d80cd0cf15c803af88c060f1fedd56ef249f3bb4
           path: _kuu-spec
 
       # 公式 install script で rolling nightly を直取得 (moonup の nightly index は
