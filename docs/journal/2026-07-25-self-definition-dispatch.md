@@ -100,7 +100,28 @@ green、Linux CI で red。
 「検査が壊れている」と「検査が通っている」の区別が付かない。locale 依存の文字クラスは
 CI と手元で挙動が割れる典型。
 
-### 4. H5 (`--version`) の実現形はプラン案と違った
+### 4. `moon build` 単独は埋め込み定義を再生成しない (誤観測の罠)
+
+**現象**: 挙動を調べようと `main.mbt` に一時的な eprintln を入れて `moon build --target native`
+だけで作り直したところ、`kuu parse --help` が exit 2 / stdout 空になり、「`--help` 系が全滅して
+いる」という誤った観測をした。eprintln を消して再ビルドしても直らず、原因を実装側に求めかけた。
+
+**正体**: `cli/src/main/def_embedded.mbt` は `just generate-self-definition` (python で
+`kuu-cli.def.json` + `VERSION` を MoonBit の string literal へ変換) が作る生成物で、
+**`moon build` はこれを再生成しない**。`just e2e` / `just smoke` / `just test` は前段に
+generate を挟んでいるので気付かないが、`moon build` を直接叩くと**古い埋め込み定義のまま**
+リンクされる。self-hosted dispatch は定義そのものが挙動なので、stale な埋め込みは
+そのまま挙動の差になる。
+
+**解決**: 手で binary を作るときは必ず `just generate-self-definition && moon build --target native`。
+デバッグ出力の挿入も観測を歪める側に回ったので、切り分けは
+`kuu parse <self-def> -- <argv...>` の JSON (= dispatch を介さない生の parse 結果) を読む
+外形観測に切り替えた。
+
+**教訓**: 生成物を含むビルドで「直したのに直らない」「触っていないのに壊れた」が出たら、
+まず生成 step を通したか疑う。実装を疑う前に**ビルド入力の鮮度**を確認する。
+
+### 5. H5 (`--version`) の実現形はプラン案と違った
 
 プランの暫定案は「`type:"help"` 要素を name:"version" で置き、`fired_action=="version"` を
 dispatch で判別」だったが、実装は `type:"string"` + `long: [":set:0.0.0"]` + `on_failure: true`
@@ -195,13 +216,30 @@ empty→nonempty、stdout の ERE を通らない値、cword を 3→2、再結�
 
   `kuu help` (引数なし) は正しく help scope を出すので `cmd_help_text` の path 解釈は健全
   (`kuu help <def> --path '["completion"]'` も正しい scope を返す)。落ちるのは
-  **required 引数を持たない中間 scope** の 2 つだけ。`kuu completion --help` は自己 parse が
-  success になり (`result = {"help": true, "completion": {}}`)、dispatch が
-  `print_self_help([])` で常に root path を渡すのが原因。`kuu help --help` は result が
-  `{"help": {...}}` (help command と help option が同じキーを取り合う) で経路が別、こちらは
-  原因未特定。required を持つ scope は failure 経路に落ち、`failure_path` が errors の path から
-  scope を復元するので正しく動いている = **成功経路に scope 復元が無い**のが本質。
-  修正には「help がどの scope で立ったか」を result から辿る処理が要り、実装方針の裁定待ち
+  **required 引数を持たない中間 scope** の 2 つだけ。required を持つ scope は failure 経路に
+  落ち、`failure_path` が errors の path から scope を復元するので正しく動く。
+
+  切り分けの根拠は、kuu-cli の dispatch を介さない生の parse 結果 (= kuu.mbt が返すもの):
+
+  ```
+  kuu parse <self-def> -- completion --help
+    → {"outcome":"success","fired_action":null,"result":{"help":true,"completion":{}}}
+  kuu parse <self-def> -- help --help
+    → {"outcome":"success","fired_action":null,"result":{"help":{"show_hidden":false,...}}}
+  kuu parse <self-def> -- parse --help
+    → {"outcome":"failure","fired_action":"help","result":null}
+  ```
+
+  - **`completion --help` は kuu-cli の bug**: kuu.mbt は result に `completion` キーを載せて
+    「どの scope に居るか」を渡している。それを無視して dispatch が `print_self_help([])` と
+    空 path を呼ぶのが原因。成功経路に scope 復元が無い
+  - **`help --help` は def.json の設計問題**: help *command* と help *option* が同じ `help` を
+    result キーに取り合い、option の bool が command の object に上書きされて消える。
+    kuu-cli は「`--help` が立った」ことすら result から知り得ない。help option に `export_key`
+    を与えてキーを分ければ def 側で解消できる。ただし **同名衝突が silent に値を落とす**
+    意味論そのもの (co-exposure collision として Ambiguous に昇格しない) は spec 面へ渡す価値がある
+
+  修正方針は裁定待ち
 - **`--env` の piece_filters reject は usage error にならない**: `kuu parse def.json --env NOEQ -- ...`
   は `^[^=]+=.*$` の piece_filter で `--env` の解釈が落ち、`--env NOEQ` が **raw 域の args へ流れて**
   対象定義の parse 失敗 (exit 1) になる。`main.mbt` の `split_once` 失敗による exit 2 経路には
