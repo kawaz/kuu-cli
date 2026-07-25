@@ -633,29 +633,12 @@ fn config_file_field(
     Some(@abi.Array(rows)) =>
       for row in rows {
         match row {
-          @abi.Array(cells) => {
-            let mut path : String? = None
-            let mut value : String? = None
-            for cell in cells {
-              match cell {
-                @abi.Object(object) =>
-                  match string_field_opt(object, "path") {
-                    Some(text) => path = Some(text)
-                    None =>
-                      match string_field_opt(object, "value") {
-                        Some(text) => value = Some(text)
-                        None => ()
-                      }
-                  }
-                @abi.Scalar(@abi.String(text)) => value = Some(text)
-                _ => ()
-              }
-            }
-            match (path, value) {
-              (Some(p), Some(v)) => out.push((p, v))
+          @abi.Object(object) =>
+            match
+              (string_field_opt(object, "path"), string_field_opt(object, "value")) {
+              (Some(path), Some(value)) => out.push((path, value))
               _ => die_with("kuu: invalid --config-file result", 2)
             }
-          }
           _ => die_with("kuu: invalid --config-file row", 2)
         }
       }
