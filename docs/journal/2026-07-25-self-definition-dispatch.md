@@ -114,12 +114,21 @@ generate を挟んでいるので気付かないが、`moon build` を直接叩�
 そのまま挙動の差になる。
 
 **解決**: 手で binary を作るときは必ず `just generate-self-definition && moon build --target native`。
-デバッグ出力の挿入も観測を歪める側に回ったので、切り分けは
-`kuu parse <self-def> -- <argv...>` の JSON (= dispatch を介さない生の parse 結果) を読む
-外形観測に切り替えた。
 
-**教訓**: 生成物を含むビルドで「直したのに直らない」「触っていないのに壊れた」が出たら、
-まず生成 step を通したか疑う。実装を疑う前に**ビルド入力の鮮度**を確認する。
+**さらに悪いことに、デバッグ出力の挿入自体も観測を歪めた**。`handle_self_failure` の冒頭に
+`failure.fired_action` / `failure.errors.length()` / `failure_path(failure)` を読む eprintln を
+入れたところ、`kuu parse --help` が exit 2 / stdout 空になり (eprintln 無しでは exit 0 で
+正しい help)、DBG は全ケースで `fired_action=<none>` を報告した。DBG を消すと元に戻る。
+この観測に基づいて「self 経路では failure になっている」と報告してしまい、切り分けを誤らせた。
+
+**最終的に効いた切り分け方**: 実装に触らず、**分岐ごとに副作用が違う入力**を選んで外形
+(exit / stdout / stderr) だけを見る。ここでは `kuu help /nonexistent.json --help` を使った —
+`run_help` に入れば definition を読んで exit 1、入らなければ exit 0 で root help、と
+経路が exit code に現れる。
+
+**教訓**: (1) 生成物を含むビルドで「直したのに直らない」が出たら、実装より先に**ビルド
+入力の鮮度**を疑う。(2) 観測のために実装へ差し込むコードは**観測対象を変えうる**。
+まず外形で分岐が判別できる入力を探す方が速く、かつ嘘をつかない。
 
 ### 5. H5 (`--version`) の実現形はプラン案と違った
 
@@ -219,27 +228,41 @@ empty→nonempty、stdout の ERE を通らない値、cword を 3→2、再結�
   **required 引数を持たない中間 scope** の 2 つだけ。required を持つ scope は failure 経路に
   落ち、`failure_path` が errors の path から scope を復元するので正しく動く。
 
-  切り分けの根拠は、kuu-cli の dispatch を介さない生の parse 結果 (= kuu.mbt が返すもの):
+  **原因は 2 つとも kuu-cli の `dispatch` にある。kuu.mbt / spec は健全**で、必要な情報
+  (help option の真偽 + 選ばれた command の kv) を両方 result に載せて渡している。
+
+  経路の確定は **デバッグ出力を使わない外形観測**で行った (下記「調査時の罠」も参照):
 
   ```
-  kuu parse <self-def> -- completion --help
-    → {"outcome":"success","fired_action":null,"result":{"help":true,"completion":{}}}
-  kuu parse <self-def> -- help --help
-    → {"outcome":"success","fired_action":null,"result":{"help":{"show_hidden":false,...}}}
-  kuu parse <self-def> -- parse --help
-    → {"outcome":"failure","fired_action":"help","result":null}
+  kuu help /nonexistent.json --help  → exit 0 / root help      (definition を読みに行かない)
+  kuu help /nonexistent.json         → exit 1 / cannot read ... (run_help に入り読みに行く)
+  kuu help --show-hidden             → exit 0 / help scope の help
+  kuu help --help                    → exit 0 / root help
   ```
 
-  - **`completion --help` は kuu-cli の bug**: kuu.mbt は result に `completion` キーを載せて
-    「どの scope に居るか」を渡している。それを無視して dispatch が `print_self_help([])` と
-    空 path を呼ぶのが原因。成功経路に scope 復元が無い
-  - **`help --help` は def.json の設計問題**: help *command* と help *option* が同じ `help` を
-    result キーに取り合い、option の bool が command の object に上書きされて消える。
-    kuu-cli は「`--help` が立った」ことすら result から知り得ない。help option に `export_key`
-    を与えてキーを分ければ def 側で解消できる。ただし **同名衝突が silent に値を落とす**
-    意味論そのもの (co-exposure collision として Ambiguous に昇格しない) は spec 面へ渡す価値がある
+  `--help` を足した瞬間に `run_help` へ入らなくなる = `dispatch` 冒頭の
+  `field_opt(root, "help") == Bool(true)` にヒットして `print_self_help([])` (空 path) が
+  呼ばれている。`kuu help` / `kuu help --show-hidden` が正しく help scope を出すのは、
+  そこでは help option の値が `false` でこの match を素通りするから。
 
-  修正方針は裁定待ち
+  - **`result` は同名キーを 2 つ持つ**: `@kuu.ResultValue::Object` は
+    `Array[(String, ResultValue)]` なので、help *option* の bool と help *command* の kv が
+    `[("help", Bool(true)), ("help", Object{...})]` のように並存できる。kuu-cli の
+    `field_opt` は先頭から走査して**最初の一致**を返すため bool を拾う
+  - **`completion --help` も同根**: result は `[("help", Bool(true)), ("completion", Object{})]`。
+    DESIGN §2.6 / DR-052 のとおり選ばれた command は子が全 absent でも空 `{}` を持つので、
+    **どの scope が選ばれたかは result から機械的に導出できる**。それを使わず空 path を
+    渡しているのが bug
+  - 修正方針: `help == true` を見たら result を再帰的に辿って command path を組み、
+    `print_self_help(path)` に渡す (空 `{}` 規定が根拠)。加えて同名キーの取り違えを
+    避けるなら、help 判定を型で絞るか def.json の help option に `export_key` を与える。
+    **未実施 — 実装方針は裁定待ち**
+
+  なお `kuu parse` の JSON 出力では**この重複キーが見えない**。`wire.mbt` の `rval_to_json`
+  が `Json::object(Map::from_array(pairs))` で組むため、同名キーは後勝ちで潰れる
+  (`help --help` の payload 出力は `{"help":{...}}` としか見えず、bool 側が消える)。
+  調査中この出力を根拠に「payload 経路と self 経路で結果が非対称」と誤読しかけた。
+  CLI の出力契約として同名キーを黙って落としてよいかは spec 面へ渡す候補
 - **`--env` の piece_filters reject は usage error にならない**: `kuu parse def.json --env NOEQ -- ...`
   は `^[^=]+=.*$` の piece_filter で `--env` の解釈が落ち、`--env NOEQ` が **raw 域の args へ流れて**
   対象定義の parse 失敗 (exit 1) になる。`main.mbt` の `split_once` 失敗による exit 2 経路には
