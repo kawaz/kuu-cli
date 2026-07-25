@@ -6,9 +6,34 @@
 
 ```sh
 kuu parse def.json -- --port 8080 serve
-kuu complete def.json -- --po
+kuu complete def.json --args-before '["myapp", "--po"]'
 kuu validate def.json
 ```
+
+## サブコマンド
+
+```sh
+kuu parse      <def.json> [options] [--] <args...>
+kuu complete   <def.json> --args-before <json-array> [--args-after <json-array>]
+kuu validate   <def.json>
+kuu help       <def.json> [--path <json-array>] [--depth all] [--format text]
+kuu completion generate <def.json> --shell <bash|zsh|fish> --binary <name> --uuid <id>
+kuu completion query    <def.json> --cword <n> -- <words...>
+```
+
+`<def.json>` に `-` を渡すと definition を stdin から読む。`kuu --help` / `kuu <subcommand> --help` は kuu-cli 自身の definition を描画する — argv の解析に使うものと同一なので、help 表示が受理される command line からずれることがない。
+
+## Exit code
+
+| code | 意味 |
+|---|---|
+| `0` | 成功。`--help` / `--version` / 引数なし (root help を表示) もここ。 |
+| `1` | payload の失敗: `<def.json>` が読めない、JSON として不正、definition として reject された、argv がその definition で parse できない、help query が存在しない path / category を指した。 |
+| `2` | kuu-cli 自身の usage error: 未知のサブコマンド、オペランド欠落、オプション値の形不正 (`--args-before` / `--path` / `--tty` は JSON、`--env` は `KEY=VALUE`)。 |
+
+機械可読な出力 (結果 JSON、生成した補完 glue、補完候補) と help テキストは **stdout**、kuu-cli 自身の診断は **stderr**。したがって exit `1` でも stdout には整った JSON レポートが残る — 唯一の例外は `<def.json>` が読めない場合で、報告対象の definition が無いため stderr にプレーンテキストで出る。
+
+exit code は definition ではなくアプリケーションの裁量 (kuu spec は wire model の外に置いている)。この表は kuu-cli 自身の契約。
 
 ## なぜスタンドアロンバイナリか
 
@@ -20,7 +45,7 @@ kuu の definition は言語非依存。スタンドアロンの `kuu` バイナ
 
 | impl | status | notes |
 |---|---|---|
-| [`impl/mbt`](./impl/mbt/) (MoonBit) | PoC — `parse` / `complete` / `validate` サブコマンド、e2e で spec fixture の代表 5 case を fixture 本体から直接読み込んで pin (詳細 [`impl/mbt/README.md`](./impl/mbt/README.md)) | spec の参照実装 [kawaz/kuu.mbt](https://github.com/kawaz/kuu.mbt) を流用 |
+| [`impl/mbt`](./impl/mbt/) (MoonBit) | PoC — 上記の全サブコマンドを kuu-cli 自身の kuu definition で dispatch、e2e で spec fixture の代表 5 case を fixture 本体から直接読み込んで pin (詳細 [`impl/mbt/README.md`](./impl/mbt/README.md)) | spec の参照実装 [kawaz/kuu.mbt](https://github.com/kawaz/kuu.mbt) を流用 |
 
 ## Status
 

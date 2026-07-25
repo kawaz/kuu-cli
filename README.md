@@ -6,9 +6,34 @@ A standalone CLI for the [kuu](https://github.com/kawaz/kuu) argument-definition
 
 ```sh
 kuu parse def.json -- --port 8080 serve
-kuu complete def.json -- --po
+kuu complete def.json --args-before '["myapp", "--po"]'
 kuu validate def.json
 ```
+
+## Subcommands
+
+```sh
+kuu parse      <def.json> [options] [--] <args...>
+kuu complete   <def.json> --args-before <json-array> [--args-after <json-array>]
+kuu validate   <def.json>
+kuu help       <def.json> [--path <json-array>] [--depth all] [--format text]
+kuu completion generate <def.json> --shell <bash|zsh|fish> --binary <name> --uuid <id>
+kuu completion query    <def.json> --cword <n> -- <words...>
+```
+
+`<def.json>` may be `-` to read the definition from stdin. `kuu --help` and `kuu <subcommand> --help` render kuu-cli's own definition — the same one it parses its argv with, so the help text can never drift from the accepted command line.
+
+## Exit codes
+
+| code | meaning |
+|---|---|
+| `0` | Success. Also `--help`, `--version`, and `kuu` with no arguments (which prints the root help). |
+| `1` | The payload failed: `<def.json>` could not be read, was not valid JSON, was rejected as a definition, the argv did not parse against it, or a help query named a path / category that does not exist. |
+| `2` | kuu-cli's own usage error: unknown subcommand, a missing operand, or an option value in the wrong shape (`--args-before` / `--path` / `--tty` take JSON, `--env` takes `KEY=VALUE`). |
+
+Machine-readable output (the result JSON, generated completion glue, completion candidates) and help text go to **stdout**; kuu-cli's own diagnostics go to **stderr**. So exit `1` still leaves a well-formed JSON report on stdout — the one exception is an unreadable `<def.json>`, reported on stderr as plain text because there is no definition to report against.
+
+Exit codes are the application's business, not the definition's: the kuu spec deliberately leaves them out of the wire model, so this table is kuu-cli's own contract.
 
 ## Why a standalone binary
 
@@ -20,7 +45,7 @@ This repository hosts implementations in multiple languages under `impl/`, all c
 
 | impl | status | notes |
 |---|---|---|
-| [`impl/mbt`](./impl/mbt/) (MoonBit) | PoC — `parse` / `complete` / `validate` subcommands; e2e pins 5 representative spec fixture cases directly (see [`impl/mbt/README.md`](./impl/mbt/README.md)) | reuses [kawaz/kuu.mbt](https://github.com/kawaz/kuu.mbt), the spec's reference implementation |
+| [`impl/mbt`](./impl/mbt/) (MoonBit) | PoC — all subcommands above, dispatched from kuu-cli's own kuu definition; e2e pins 5 representative spec fixture cases directly (see [`impl/mbt/README.md`](./impl/mbt/README.md)) | reuses [kawaz/kuu.mbt](https://github.com/kawaz/kuu.mbt), the spec's reference implementation |
 
 ## Status
 

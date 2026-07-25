@@ -8,11 +8,14 @@ Reuses [kawaz/kuu.mbt](https://github.com/kawaz/kuu.mbt) (the spec reference imp
 impl/mbt/
   moon.work            workspace: cli + deps/kuu.mbt
   cli/
+    kuu-cli.def.json   kuu-cli's own kuu definition (source of its argv parsing and help)
     moon.mod           name="kawaz/kuu-cli-mbt", imports kawaz/kuu@0.1.0
     src/
-      lib/wire.mbt         JSON emitters (parse / complete / validate)
+      lib/wire.mbt         JSON emitters (parse / complete / validate / help / completion)
+      lib/renderer.mbt     help text renderer
       lib/wire_wbtest.mbt  hermetic wbtest
-      main/main.mbt        argv dispatch + libc exit(3) binding
+      main/main.mbt        self-parse + dispatch + libc exit(3) binding
+      main/def_embedded.mbt  generated from kuu-cli.def.json + VERSION (just generate-self-definition)
   deps/
     kuu.mbt              symlink to sibling kawaz/kuu.mbt/main (gitignored)
   justfile             setup / lint / test / e2e / conformance
@@ -57,19 +60,14 @@ Runs every `query: "parse"` fixture case through the compiled binary (fixing the
 
 ## CLI reference
 
-```sh
-kuu parse    <def.json> [options] [--] <args...>
-kuu complete <def.json> --args-before <json-array> [--args-after <json-array>]
-kuu validate <def.json>
-```
+The subcommand surface and the exit-code contract are documented in the root [README](../../README.md) (that table is the canonical one). This section covers what is specific to the MoonBit implementation.
 
+- **Self-hosted dispatch**: `cli/kuu-cli.def.json` is kuu-cli's own kuu definition. `just generate-self-definition` embeds it (plus `VERSION`) into `cli/src/main/def_embedded.mbt`, and `main.mbt` parses its own argv with `@kuu.parse` / `@kuu.resolve` against it, then dispatches on the resulting `result` object. `--help` / `--version` / completion of `kuu` itself all come from the same definition, so the accepted command line and the rendered help cannot drift apart.
+- **Exit mapping in the code**: `CmdResult.exit` (`cli/src/lib/wire.mbt`) is a *payload-level* class, not the process code — `main.mbt`'s `emit_payload` collapses every non-zero payload class to process exit **1**, and every failure of kuu-cli's own command line goes through `die_with(..., 2)` / `handle_self_failure` for **2**. Those two functions are the only places that decide a process exit code.
 - **Value sources** (spec DR-109 §6 — kuu-cli is NOT a test tool; it must behave like an in-app kuu): by default `parse` takes the **real environment** (env vars via the process environment, tty via `isatty(3)`, config files read from disk when the definition's `config_file` cell resolves a path). Test-fixation options: `--no-env` / `--env k=v` (repeatable override) / `--no-config` / `--config <json|file>` (direct object supply) / `--tty <json>` (pin observations, same shape as fixture `tty` input).
 - **Envelope** (spec DR-109 §2/§3/§4): output matches the conformance fixture expect vocabulary strictly — no extra fields (`message` / `scope` are not emitted; empty `element` is omitted; `warnings` is always present incl. `[]`). `sources` is always included on resolved success output. Ambiguous `interpretations` carry each interpretation's parse-phase result view (`{result, claimants}` when a co-exposure collision is present, bare view otherwise) — the value-source ladder is NOT applied to interpretations.
-- Exit 0: success. Exit 1: parse/validate failure. Exit 2: CLI usage error (PoC assignment).
-- **stdout / stderr split**: machine output (the single JSON object from `parse` / `complete` / `validate`, plus `kuu help`) is on stdout; human-oriented text (usage on startup errors, unknown subcommand, extra-arg errors) is on stderr. `kuu` (no args) / `kuu <unknown-sub>` / any subcommand missing its `<def.json>` writes usage to stderr and exits 2. `-h` short alias is intentionally NOT provided (kawaz CLI preference: short aliases only when explicitly asked for).
-- See `cli/src/lib/wire.mbt` for the emit shape and the remaining "PoC 仮置き" note (exit-code assignment) that needs spec-side ratification.
+- `-h` short alias is intentionally NOT provided (kawaz CLI preference: short aliases only when explicitly asked for).
 
 ## Known issues
 
 - `moon fmt --check` fails: the formatter (`moon` 0.1.20260709) rewrites `options("is-main": true)` → `pkgtype(kind: "executable")`, but the compiler in the same toolchain does not accept `pkgtype`. `just lint` therefore only runs `moon check`. To be resolved when a toolchain aligns the two.
-- The remaining "PoC 仮置き" item (PoC exit-code assignment 0/1/2) is documented in the file-level comment of `cli/src/lib/wire.mbt`.

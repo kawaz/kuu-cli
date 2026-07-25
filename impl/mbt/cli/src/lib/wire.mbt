@@ -28,10 +28,13 @@
 // Failure に転落させ、parse Success + resolve Failure の場合も Failure JSON を出す (spec
 // DR-053 §2 の failure に resolve 相失敗も含まれる意味論と整合)。
 //
-// 【PoC 仮置き — 統括が正本化する材料】
+// 【`CmdResult.exit` は payload 級であってプロセス exit code ではない】
 //
-// exit code は `--help` 系 (未実装) を除き 3 値: 0=成功、1=parse failure / validate 失敗、
-// 2=CLI 使い方エラー (unknown subcommand, malformed args JSON 等)。PoC の暫定割当、後日正本化。
+// ここが返す `exit` は「payload が成功したか (0) / 失敗したか (非 0)」の級。プロセスの
+// exit code を決めるのは main.mbt の 2 箇所だけ: `emit_payload` が非 0 の payload 級を
+// 一律 1 へ畳み、kuu-cli 自身の command line の失敗は `die_with(_, 2)` /
+// `handle_self_failure` が 2 を返す。規約表はルート README の Exit codes 節が正本
+// (exit code は definition ではなくアプリの裁量 — spec 側裁定 DOG-Q4γ=a, 2026-07-24)。
 
 ///|
 /// A subcommand result: the JSON string to write to stdout, plus the process exit code.
