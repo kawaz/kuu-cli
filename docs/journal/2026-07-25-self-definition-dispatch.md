@@ -228,8 +228,9 @@ empty→nonempty、stdout の ERE を通らない値、cword を 3→2、再結�
   **required 引数を持たない中間 scope** の 2 つだけ。required を持つ scope は failure 経路に
   落ち、`failure_path` が errors の path から scope を復元するので正しく動く。
 
-  **原因は 2 つとも kuu-cli の `dispatch` にある。kuu.mbt / spec は健全**で、必要な情報
-  (help option の真偽 + 選ばれた command の kv) を両方 result に載せて渡している。
+  **直接の原因は 2 つとも kuu-cli の `dispatch`** (修正済み `b07b7406`)。ただし
+  **その根底に kuu.mbt の露出キー衝突未検出 (option × command) がある** — 統括の裏取りで判明、
+  別途起票される。当初「kuu.mbt / spec は健全」と報告したが誤りだった (下記「根底の kuu.mbt bug」)。
 
   経路の確定は **デバッグ出力を使わない外形観測**で行った (下記「調査時の罠」も参照):
 
@@ -253,16 +254,42 @@ empty→nonempty、stdout の ERE を通らない値、cword を 3→2、再結�
     DESIGN §2.6 / DR-052 のとおり選ばれた command は子が全 absent でも空 `{}` を持つので、
     **どの scope が選ばれたかは result から機械的に導出できる**。それを使わず空 path を
     渡しているのが bug
-  - 修正方針: `help == true` を見たら result を再帰的に辿って command path を組み、
-    `print_self_help(path)` に渡す (空 `{}` 規定が根拠)。加えて同名キーの取り違えを
-    避けるなら、help 判定を型で絞るか def.json の help option に `export_key` を与える。
-    **未実施 — 実装方針は裁定待ち**
+  - 修正 (`b07b7406`): help 判定を型で絞る `help_requested()` と、result を再帰的に辿って
+    command path を導出する `selected_command_path()` を新設し、`print_self_help(path)` へ渡す。
+    8 scope すべてが自分の scope の help を出すことを e2e で pin した
 
   なお `kuu parse` の JSON 出力では**この重複キーが見えない**。`wire.mbt` の `rval_to_json`
   が `Json::object(Map::from_array(pairs))` で組むため、同名キーは後勝ちで潰れる
   (`help --help` の payload 出力は `{"help":{...}}` としか見えず、bool 側が消える)。
   調査中この出力を根拠に「payload 経路と self 経路で結果が非対称」と誤読しかけた。
-  CLI の出力契約として同名キーを黙って落としてよいかは spec 面へ渡す候補
+
+### 根底の kuu.mbt bug: 露出キー衝突が option × command で検出されない
+
+上の取り違えが起きる前提そのもの (= 同じ result キーに option と command が並存できる) が
+kuu.mbt の bug だった。統括の裏取りを受けて実機再現 (2026-07-25):
+
+```json
+{"options":[{"name":"x","type":"flag","long":true}],
+ "commands":[{"name":"x","type":"command","options":[{"name":"inner","type":"flag","long":true}]}]}
+```
+
+| argv | outcome | result | effects |
+|---|---|---|---|
+| `--x` | success | `{"x": true}` | `x=true` |
+| `x` | success | `{"x": {"inner": false}}` | (なし) |
+| `--x x` | success | `{"x": {"inner": false}}` | **`x=true` が残る** |
+
+`--x x` は **effects に `x=true` が残るのに result から消える** = 値の silent loss。
+DESIGN §15.5 / DR-073 は「同じ露出キーへ解決する 2 要素が同一入力で両方露出したら
+**ambiguous**」と規定しており、option × option は fixture
+`fixtures/export-key/collision.json::co-exposure-collision` で pin 済み (実機で
+`outcome=ambiguous`, interpretations=2 を確認)。commands を検出対象から除く規定は spec に無い。
+**option × command だけが検出をすり抜けている**。kuu.mbt 側で別途起票・修正 (本リポでは触らない)。
+
+**この bug が直ると kuu-cli.def.json は ambiguous になる**: global `--help` option と `help`
+command が同じ "help" を名乗っているため。`kuu help --help` が ambiguous に落ちるので、
+衝突検出の修正と同じ窓で def.json 側の是正が要る (推し = help option に `export_key` を
+与えて内部識別子側を動かす。CLI の公開語彙 `kuu help` / `--help` を据え置けるため)
 - **`--env` の piece_filters reject は usage error にならない**: `kuu parse def.json --env NOEQ -- ...`
   は `^[^=]+=.*$` の piece_filter で `--env` の解釈が落ち、`--env NOEQ` が **raw 域の args へ流れて**
   対象定義の parse 失敗 (exit 1) になる。`main.mbt` の `split_once` 失敗による exit 2 経路には
