@@ -53,10 +53,6 @@ fn main {
       // 並べて見せるためのものではない。
       eprintln("kuu: command line is ambiguous")
       for interpretation in ambiguity.interpretations {
-        let claimants = interpretation.claimants()
-        for claimant in claimants {
-          eprintln("  " + claimant.0 + ": " + claimant.1)
-        }
         eprintln(
           "  " + result_repr(@kuu.output_of_interpretation(self_ast, interpretation)),
         )

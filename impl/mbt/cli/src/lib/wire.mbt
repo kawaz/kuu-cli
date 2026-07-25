@@ -21,8 +21,8 @@
 //     scope-path 修飾 (CONFORMANCE §2)
 //   - `warnings`: `@kuu.warnings(parse_outcome)` (kuu 玄関 API) → `{element, kind}` の object 配列
 //     (spec CONFORMANCE §2)。空でも `[]` を出す (fixture の `warnings: []` 期待と厳密一致)
-//   - `interpretations` (ambiguous): 各解釈の `{result, claimants?}` (DR-053 §3 / DR-073)。
-//     resolve 相は適用しない (DR-109 §4 — parse 相の骨格のみ)
+//   - `interpretations` (ambiguous): 各解釈の result ビュー (DR-053 §3)。resolve 相は適用しない
+//     (DR-109 §4 — parse 相の骨格のみ)
 //
 // resolve 相の失敗 (DR-066 env/config seat parse 失敗、DR-009 §7 filter reject) は Outcome を
 // Failure に転落させ、parse Success + resolve Failure の場合も Failure JSON を出す (spec
@@ -330,28 +330,13 @@ fn outcome_to_json(
     }
     @kuu.Failure(d) => (failure_to_json(d), 1)
     @kuu.Ambiguous(d) => {
-      // DR-109 §4: interpretation は resolve 相を適用せず parse 相の骨格のみ返す。各解釈は
-      // result ビュー (claimants 無し) または `{result, claimants}` (共露出衝突あり、DR-073 §1
-      // の「組で保持」)。ビューの組み立ては kuu 玄関 API `@kuu.output_of_interpretation` へ委譲
-      // (TRI-Q4、部品直呼びを解消)。
+      // DR-109 §4: interpretation は resolve 相を適用せず parse 相の骨格のみ返す。ambiguous は
+      // 構造的に複数の完全経路が立つ場合に限られる (DR-038 / DR-120 §7) ので、result ビュー
+      // 自体が解釈を区別する — 追加の provenance 面は要らない。ビューの組み立ては kuu 玄関 API
+      // `@kuu.output_of_interpretation` へ委譲 (TRI-Q4、部品直呼びを解消)。
       let arr : Array[Json] = []
       for interp in d.interpretations {
-        let view = @kuu.output_of_interpretation(ast, interp)
-        let claimants = interp.claimants()
-        if claimants.length() == 0 {
-          arr.push(rval_to_json(view))
-        } else {
-          let cl : Array[(String, Json)] = []
-          for kv in claimants {
-            cl.push((kv.0, Json::string(kv.1)))
-          }
-          arr.push(
-            Json::object({
-              "result": rval_to_json(view),
-              "claimants": Json::object(Map::from_array(cl)),
-            }),
-          )
-        }
+        arr.push(rval_to_json(@kuu.output_of_interpretation(ast, interp)))
       }
       let fields : Array[(String, Json)] = [
         ("outcome", Json::string("ambiguous")),
@@ -634,6 +619,7 @@ fn deferr_kind_str(k : @kuu.DefErrorKind) -> String {
     @abi.ZeroProgress => "zero-progress"
     @abi.ConfigCycle => "config-cycle"
     @abi.InvalidArgument => "invalid-argument"
+    @abi.ExportKeyCollision => "export-key-collision"
   }
 }
 
