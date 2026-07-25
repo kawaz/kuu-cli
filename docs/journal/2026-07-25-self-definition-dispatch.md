@@ -143,6 +143,32 @@ probe() { o=$(mktemp); e=$(mktemp); "$@" >"$o" 2>"$e"; printf 'exit=%d stdout=%d
 probe $BIN --help
 ```
 
+## 節目レビュー (codex) 由来の修正
+
+D4 の途中で codex-sol の節目レビューが入り、以下を追加で直した。
+
+- **Ambiguous 提示が DR-118 §3 違反** (`f32bff29`): 自己 parse が Ambiguous に落ちた時の診断が
+  `@kuu.resolve_interpretation` を呼んでいた。これは「解釈を 1 つ選んで前進する」API であって
+  比較表示用ではなく、値源ラダーを適用するので env/config/default 由来の値が比較ビューに混ざる。
+  加えて resolve に失敗した候補は `interpretation failed during resolve` に潰れ、parse 相では
+  有効だった内容が消えていた。玄関 API の `@kuu.output_of_interpretation` へ置換
+  (`wire.mbt` の interpretations 生成側は元から同 API を使っていた)。
+  **皮肉なことに kuu-cli 自身の README がこの正しい規定を書いていた** — 文書と実装の
+  双方向チェックが効いていなかった例
+- **プロセス境界テストの未達** (`f78ccae0`): プラン §4.2 層 2 は「exit code / stream 分離 /
+  stdin / --version を 1 ケースずつ固定」を要求していたが、既存 e2e は command substitution で
+  stdout しか見ておらず stderr 空・exit 0 を assert していなかった。exit / stdout / stderr を
+  個別ファイルへ採取する `proc_case` を足して 9 ケース pin
+- **help 文言検査が root のみ** (`362dddd4`): renderer は scope ごとに文言を組むので root だけでは
+  H6 の gate にならない。8 scope へ拡張
+- **bash 再結合の検証が記号 1 種に偏り** (`4fc69efa`): `=` だけで、連続 break char・先頭 break
+  char・空 word の分岐を踏んでいなかった。spec の再結合規則から期待値を導出して 5 形追加 —
+  5 ケースとも実装と一致 (未検証範囲だったがオフバイワンは無し)
+
+テストを足す時は **canary で red を確認**してから commit した (期待 exit を 2→0、期待 stderr を
+empty→nonempty、stdout の ERE を通らない値、cword を 3→2、再結合語を `=value`→`value` の 5 本)。
+「green だから通っている」は検知力の証明にならない。
+
 ## 残課題 / 観察
 
 - **`tests/self/definition.sh` の jq 前処理はもう要らない**: 冒頭で
@@ -155,6 +181,27 @@ probe $BIN --help
 - **help に `--version <VALUE>` と表示される**: version option を `type:"string"` で置いた副作用で
   value_name が出る。実際には値を取らない (long 入口が `:set:` で注入する) ので表示が実態とずれる。
   DOG-Q1 で version の正式席が決まるまでの暫定形の粗
+- **`kuu help --help` と `kuu completion --help` が root help を出す** (H4 の残穴、要裁定):
+  8 scope の help 検査を足す過程で発見。実測 (2026-07-25、Usage 行で判定):
+
+  | argv | Usage 行 | 判定 |
+  |---|---|---|
+  | `kuu --help` | `Usage: kuu [OPTIONS] <COMMAND>` | 正 |
+  | `kuu parse --help` | `Usage: kuu parse [OPTIONS] [--] <DEF_JSON> [ARG]...` | 正 |
+  | `kuu complete --help` / `kuu validate --help` | 各 scope | 正 |
+  | `kuu completion generate --help` / `kuu completion query --help` | 各 scope | 正 |
+  | `kuu help --help` | `Usage: kuu [OPTIONS] <COMMAND>` | **root へ落ちる** |
+  | `kuu completion --help` | `Usage: kuu [OPTIONS] <COMMAND>` | **root へ落ちる** |
+
+  `kuu help` (引数なし) は正しく help scope を出すので `cmd_help_text` の path 解釈は健全
+  (`kuu help <def> --path '["completion"]'` も正しい scope を返す)。落ちるのは
+  **required 引数を持たない中間 scope** の 2 つだけ。`kuu completion --help` は自己 parse が
+  success になり (`result = {"help": true, "completion": {}}`)、dispatch が
+  `print_self_help([])` で常に root path を渡すのが原因。`kuu help --help` は result が
+  `{"help": {...}}` (help command と help option が同じキーを取り合う) で経路が別、こちらは
+  原因未特定。required を持つ scope は failure 経路に落ち、`failure_path` が errors の path から
+  scope を復元するので正しく動いている = **成功経路に scope 復元が無い**のが本質。
+  修正には「help がどの scope で立ったか」を result から辿る処理が要り、実装方針の裁定待ち
 - **`--env` の piece_filters reject は usage error にならない**: `kuu parse def.json --env NOEQ -- ...`
   は `^[^=]+=.*$` の piece_filter で `--env` の解釈が落ち、`--env NOEQ` が **raw 域の args へ流れて**
   対象定義の parse 失敗 (exit 1) になる。`main.mbt` の `split_once` 失敗による exit 2 経路には
