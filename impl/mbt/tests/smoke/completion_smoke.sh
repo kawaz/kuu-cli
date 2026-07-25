@@ -298,6 +298,31 @@ else
     check_words "COMP_WORDBREAKS rejoin (--config-file=/et)" \
       "$(printf 'cword=2\nword=<kuu>\nword=<parse>\nword=<--config-file=/et>')" \
       4 kuu parse --config-file = /et
+    # 以下の期待値は spec `templates/completion.bash` の再結合規則 (TRANSLATION.md の
+    # 「単一 break char は直前 word へ連結し in_break を立てる / 直後の非空 word も継続連結 /
+    # 空 word は独立保持 / cword は元 COMP_CWORD の指す word の再結合後 index」) から導出した。
+    # 記号 1 種 (`=`) だけだと連続 break char・先頭 break char・空 word の分岐を踏まない。
+    #
+    # 連続 break char: `http://x` は [http, :, //x] に割れ、`:` の直後の `//x` も継続連結される。
+    check_words "COMP_WORDBREAKS rejoin (http://x)" \
+      "$(printf 'cword=2\nword=<kuu>\nword=<parse>\nword=<http://x>')" \
+      4 kuu parse http : //x
+    # カーソルが break char (`:`) の上にある場合も、再結合後の同じ word を指す。
+    check_words "COMP_WORDBREAKS rejoin (cursor on break char)" \
+      "$(printf 'cword=2\nword=<kuu>\nword=<parse>\nword=<http://x>')" \
+      3 kuu parse http : //x
+    # option 形でない素の eq 形 (`name=value`)。
+    check_words "COMP_WORDBREAKS rejoin (name=value)" \
+      "$(printf 'cword=2\nword=<kuu>\nword=<parse>\nword=<name=value>')" \
+      4 kuu parse name = value
+    # 末尾空白由来の空 word は「カーソルの新しい位置」として独立保持され、cword がそれを指す。
+    check_words "COMP_WORDBREAKS rejoin (trailing empty word)" \
+      "$(printf 'cword=3\nword=<kuu>\nword=<parse>\nword=<http://x>\nword=<>')" \
+      5 kuu parse http : //x ""
+    # 配列先頭の break char = 連結先の直前 word が無い形 (glue の `__j < 0` 分岐)。
+    check_words "COMP_WORDBREAKS rejoin (leading break char)" \
+      "$(printf 'cword=0\nword=<=value>')" \
+      1 = value
   else
     # bash 不在時も報告件数を揃える (件数だけ見て回帰を判定できるようにする)
     report skip "self def: top-level candidates" "bash not found"
@@ -305,6 +330,11 @@ else
     report skip "self def: option enum values" "bash not found"
     report skip "self def: COMP_WORDBREAKS rejoin (--config-file=)" "bash not found"
     report skip "self def: COMP_WORDBREAKS rejoin (--config-file=/et)" "bash not found"
+    report skip "self def: COMP_WORDBREAKS rejoin (http://x)" "bash not found"
+    report skip "self def: COMP_WORDBREAKS rejoin (cursor on break char)" "bash not found"
+    report skip "self def: COMP_WORDBREAKS rejoin (name=value)" "bash not found"
+    report skip "self def: COMP_WORDBREAKS rejoin (trailing empty word)" "bash not found"
+    report skip "self def: COMP_WORDBREAKS rejoin (leading break char)" "bash not found"
   fi
 fi
 
