@@ -137,7 +137,10 @@ e2e: generate-self-definition
       exit 2
     fi
     def_only=$(mktemp)
-    trap 'rm -f "$def_only"' EXIT
+    proc_out=$(mktemp)
+    proc_err=$(mktemp)
+    bad_def=$(mktemp)
+    trap 'rm -f "$def_only" "$proc_out" "$proc_err" "$bad_def"' EXIT
 
     # fixture の case を id で引いて (args, expect) を返すための shell function。
     #   read_case_args   <fixture_path> <case_id>  → args 配列 (改行区切り、bash mapfile 用)
@@ -285,6 +288,65 @@ e2e: generate-self-definition
     assert_eq "string missing operand hint count" "$(grep -c '^hint:' "$hint_err" || true)" "0"
     rm -f "$hint_err"
     printf "e2e OK: bool missing operand emits flag hint; string does not\n"
+
+    # ── プロセス境界の契約: exit code と stdout / stderr の分離 ──
+    # wire model は exit code も stream も持たない (DR-109 柱 4 が exit class を semantic までと
+    # 線引きした帰結) ため、この層は compiled binary へのプロセス境界テストでしか固定できない
+    # (dogfooding プラン §4.2 層 2)。正本はルート README の Exit codes 節、ここがその回帰 gate。
+    # command substitution だと stdout しか見えないので、3 者 (exit / stdout / stderr) を
+    # 個別のファイルへ採取して 1 ケースずつ assert する。
+    stream_state() {
+      if [[ -s "$1" ]]; then printf 'nonempty'; else printf 'empty'; fi
+    }
+    # proc_case <label> <want_exit> <want_stdout> <want_stderr> <stdout_grep_re|-> -- <argv...>
+    #   want_stdout / want_stderr は empty | nonempty。stdout_grep_re が `-` 以外なら stdout の
+    #   内容も ERE で確認する。
+    proc_case() {
+      local label="$1" want_exit="$2" want_stdout="$3" want_stderr="$4" stdout_re="$5"
+      shift 5
+      if [[ "${1:-}" == "--" ]]; then shift; fi
+      set +e
+      "$@" >"$proc_out" 2>"$proc_err"
+      local ec=$?
+      set -e
+      assert_eq "$label exit"   "$ec" "$want_exit"
+      assert_eq "$label stdout" "$(stream_state "$proc_out")" "$want_stdout"
+      assert_eq "$label stderr" "$(stream_state "$proc_err")" "$want_stderr"
+      if [[ "$stdout_re" != "-" ]] && ! grep -qE "$stdout_re" "$proc_out"; then
+        printf >&2 "e2e FAIL (%s): stdout does not match /%s/\n" "$label" "$stdout_re"
+        exit 1
+      fi
+      printf "e2e OK: %s -> exit %s, stdout %s, stderr %s\n" "$label" "$ec" "$want_stdout" "$want_stderr"
+    }
+
+    # exit 0 — help / version は machine 面ではないが stdout に出す (H3/H8)。
+    proc_case "no arguments"   0 nonempty empty '^Usage: kuu \[OPTIONS\] <COMMAND>' -- "$bin"
+    proc_case "--help"         0 nonempty empty '^Usage: kuu \[OPTIONS\] <COMMAND>' -- "$bin" --help
+    proc_case "parse --help"   0 nonempty empty '^Usage: kuu parse '                -- "$bin" parse --help
+    proc_case "--version"      0 nonempty empty '.'                                 -- "$bin" --version
+    assert_eq "--version stdout content" "$(cat "$proc_out")" "$(cat "{{MBT_ROOT}}/../../VERSION")"
+
+    # exit 0 — `-` で definition を stdin から読む (H7)。proc_case は argv しか渡せないので個別に書く。
+    printf '%s\n' '{"name":"stdin-def","options":[{"name":"port","type":"number","long":true}]}' > "$def_only"
+    set +e
+    "$bin" validate - <"$def_only" >"$proc_out" 2>"$proc_err"
+    stdin_ec=$?
+    set -e
+    assert_eq "validate - (stdin) exit"   "$stdin_ec" "0"
+    assert_eq "validate - (stdin) ok"     "$(jq -r '.ok' "$proc_out")" "true"
+    assert_eq "validate - (stdin) stderr" "$(stream_state "$proc_err")" "empty"
+    printf "e2e OK: validate - reads the definition from stdin -> exit 0\n"
+
+    # exit 1 — payload 側の失敗。読めない definition だけは報告対象が無いので stderr のプレーン文。
+    proc_case "unreadable definition" 1 empty nonempty '-' -- \
+      "$bin" parse "{{MBT_ROOT}}/does-not-exist-$$.json" -- x
+    printf '%s\n' '{ this is not json' > "$bad_def"
+    proc_case "malformed definition JSON" 1 nonempty empty '"malformed_definition_json"' -- \
+      "$bin" parse "$bad_def" -- x
+
+    # exit 2 — kuu-cli 自身の usage error。診断は stderr、stdout は空。
+    proc_case "unknown subcommand"        2 empty nonempty '-' -- "$bin" nosuch-subcommand
+    proc_case "missing definition operand" 2 empty nonempty '-' -- "$bin" parse
 
 # ---------- conformance sweep (情報収集モード) ----------
 
