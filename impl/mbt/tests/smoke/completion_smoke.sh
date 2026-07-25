@@ -13,12 +13,13 @@
 #     依存する。存在する bash で syntax-check + 関数直呼び 1 ケースを行う。
 #   - fish: `fish -c 'complete -C ...'` で候補列挙 (最も自動化が素直)。fish 未インストール = skip。
 #
-# 使い方: KUU_CLI=<compiled main.exe path> ./completion_smoke.sh
+# 使い方: KUU_CLI=<compiled main.exe path> KUU_CLI_DEF=<kuu-cli.def.json> ./completion_smoke.sh
 # CI では justfile smoke task 経由。ローカルでは `just impl-mbt-smoke`。
 
 set -euo pipefail
 
 : "${KUU_CLI:?KUU_CLI must be set to compiled kuu-cli main.exe path}"
+: "${KUU_CLI_DEF:?KUU_CLI_DEF must be set to cli/kuu-cli.def.json (self-dogfood section)}"
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 tmpdir="$(mktemp -d)"
@@ -56,6 +57,77 @@ report() { # ok|fail|skip name reason
     fail) fail=$((fail+1));;
     skip) skip=$((skip+1));;
   esac
+}
+
+# 形態 A の env プロトコルは self-embedded kuu-core binary (DR-117 §6 形態 A) を前提とし、
+# kuu-cli standalone (形態 B) はこのプロトコルに応じない。この gap を埋める mock binary の
+# factory を 2 つ持つ:
+#   make_query_mock    <out> <def_json> — KUU_COMPLETE env + UUID argv 一致を判定して
+#     `kuu completion query` (形態 B) へ橋渡しする。glue の動作を kuu-cli の query capability
+#     で end-to-end に検証する用 (KUU_COMPLETE_INDEX を --cword に写す)。
+#   make_recorder_mock <out> <log>      — 受け取った index / words をそのまま log に書き出して
+#     終わる。glue が組み立てた **words / cword の形そのもの** を assert する用 (候補生成側の
+#     挙動から独立させて素材の受け渡しだけを見る)。
+make_query_mock() {
+  local out="$1" def="$2"
+  cat > "$out" << MOCK
+#!/usr/bin/env bash
+set -e
+[[ "\$KUU_COMPLETE" == "$uuid" && "\$1" == "$uuid" ]] || { echo "mock: env/argv mismatch (KUU_COMPLETE=\$KUU_COMPLETE argv1=\$1)" >&2; exit 2; }
+shift  # UUID
+shift  # shell name
+if [[ -n "\${KUU_COMPLETE_INDEX:-}" ]]; then
+  exec "$KUU_CLI" completion query "$def" --cword "\$KUU_COMPLETE_INDEX" -- "\$@"
+else
+  exec "$KUU_CLI" completion query "$def" -- "\$@"
+fi
+MOCK
+  chmod +x "$out"
+}
+
+make_recorder_mock() {
+  local out="$1" log="$2"
+  cat > "$out" << MOCK
+#!/usr/bin/env bash
+set -e
+[[ "\$KUU_COMPLETE" == "$uuid" && "\$1" == "$uuid" ]] || { echo "mock: env/argv mismatch" >&2; exit 2; }
+shift  # UUID
+shift  # shell name
+{ printf 'cword=%s\n' "\${KUU_COMPLETE_INDEX:-}"; printf 'word=<%s>\n' "\$@"; } > "$log"
+MOCK
+  chmod +x "$out"
+}
+
+# glue を source して補完関数を直接駆動し、COMPREPLY を 1 行 1 候補で返す。
+# COMP_LINE / COMP_POINT は words から導出する (末尾補完の近似。`=` で COMP_WORDS が割れる形は
+# 復元規則が別なので (4c) の check_words が受け持つ)。
+drive_bash_completion() { # <glue> <comp_func> <cword> <word...>
+  local glue="$1" func="$2" cword="$3"; shift 3
+  local line="$*"
+  bash -c '
+    source "'"$glue"'"
+    COMP_WORDS=('"$(printf '%q ' "$@")"')
+    COMP_CWORD='"$cword"'
+    COMP_LINE='"$(printf '%q' "$line")"'
+    COMP_POINT='"${#line}"'
+    '"$func"'
+    printf "%s\n" "${COMPREPLY[@]}"
+  ' 2>/dev/null || true
+}
+
+# COMPREPLY に期待候補が **行として** 含まれることを確認する (順序・余剰候補は問わない —
+# 表示順は shell 依存で段 1 の実端末マトリクスの担当)。
+assert_candidates() { # <label> <output> <want...>
+  local label="$1" out="$2"; shift 2
+  local want missing=""
+  for want in "$@"; do
+    grep -qxF -- "$want" <<<"$out" || missing="$missing $want"
+  done
+  if [[ -z "$missing" ]]; then
+    report ok "$label" "candidates contain$(printf ' %s' "$@")"
+  else
+    report fail "$label" "missing:$missing (got: $(tr '\n' ' ' <<<"$out"))"
+  fi
 }
 
 # ---- (1) syntax-check 3 shell --------------------------------------------
@@ -96,43 +168,13 @@ fi
 # ---- (2) bash 関数直呼び (COMP_WORDS/COMP_CWORD/COMP_LINE 設定 + COMPREPLY assert) --
 
 if command -v bash >/dev/null 2>&1; then
-  # 形態 A の env プロトコルは self-embedded kuu-core binary (DR-117 §6 形態 A) を前提とし、
-  # kuu-cli standalone (形態 B) はこのプロトコルに応じない。この gap を埋めるため mock binary
-  # を用意し、KUU_COMPLETE env + UUID argv 一致を判定して `kuu completion query` (形態 B) へ
-  # 橋渡しする — glue の 動作を kuu-cli の query capability で end-to-end に検証する形。
-  # (mock は 3 引数目=shell, 以降=words を単純に query に転送。KUU_COMPLETE_INDEX を --cword に写す。)
-  cat > "$tmpdir/mock_binary" << MOCK
-#!/usr/bin/env bash
-set -e
-[[ "\$KUU_COMPLETE" == "$uuid" && "\$1" == "$uuid" ]] || { echo "mock: env/argv mismatch (KUU_COMPLETE=\$KUU_COMPLETE argv1=\$1)" >&2; exit 2; }
-shift  # UUID
-shift  # shell name
-if [[ -n "\${KUU_COMPLETE_INDEX:-}" ]]; then
-  exec "$KUU_CLI" completion query "$def_json" --cword "\$KUU_COMPLETE_INDEX" -- "\$@"
-else
-  exec "$KUU_CLI" completion query "$def_json" -- "\$@"
-fi
-MOCK
-  chmod +x "$tmpdir/mock_binary"
+  make_query_mock "$tmpdir/mock_binary" "$def_json"
   # mock を binary に指す glue を再生成
   "$KUU_CLI" completion generate "$def_json" \
     --shell bash --binary "$tmpdir/mock_binary" --uuid "$uuid" \
     > "$tmpdir/comp.bash.mock"
-  out=$(bash -c '
-    source "'"$tmpdir/comp.bash.mock"'"
-    COMP_WORDS=("myapp" "--")
-    COMP_CWORD=1
-    COMP_LINE="myapp --"
-    COMP_POINT=8
-    _myapp
-    printf "%s\n" "${COMPREPLY[@]}"
-  ' 2>"$tmpdir/err.bash2" || true)
-  # 期待: --port と --verbose が候補に含まれる (順序は shell 依存、問わない)
-  if echo "$out" | grep -q -- '--port' && echo "$out" | grep -q -- '--verbose'; then
-    report ok "bash function direct call (via mock binary)" "COMPREPLY contains --port and --verbose"
-  else
-    report fail "bash function direct call (via mock binary)" "unexpected COMPREPLY: '$out' (stderr: $(cat "$tmpdir/err.bash2"))"
-  fi
+  out=$(drive_bash_completion "$tmpdir/comp.bash.mock" _myapp 1 myapp --)
+  assert_candidates "bash function direct call (via mock binary)" "$out" --port --verbose
 else
   report skip "bash function direct call" "bash not found"
 fi
@@ -164,6 +206,106 @@ if command -v fish >/dev/null 2>&1; then
   fi
 else
   report skip "fish complete -C" "fish not found"
+fi
+
+# ---- (4) self-dogfood: kuu-cli 自身の def.json ------------------------------
+# findings 2026-07-24 §4.3。上の (1)〜(3) が最小 def の合成物なのに対し、ここは
+# **出荷される cli/kuu-cli.def.json をそのまま食わせて kuu-cli を補完する** 経路を見る。
+# subcommand 階層 (completion generate / query の 2 段)、seq 2 引数形 (--config-file)、
+# dd (`--`)、enum values を持つ実物なので、最小 def では踏まない形が glue まで通る。
+
+if [[ ! -f "$KUU_CLI_DEF" ]]; then
+  report fail "self-dogfood" "KUU_CLI_DEF not found at $KUU_CLI_DEF"
+else
+  for shell in zsh bash fish; do
+    "$KUU_CLI" completion generate "$KUU_CLI_DEF" \
+      --shell "$shell" --binary "$KUU_CLI" --uuid "$uuid" \
+      > "$tmpdir/self.$shell"
+  done
+
+  # (4a) 3 shell の syntax-check。自分自身の定義から出た glue が壊れていないこと。
+  for shell in zsh bash fish; do
+    if ! command -v "$shell" >/dev/null 2>&1; then
+      report skip "self def: $shell syntax-check" "$shell not found"
+      continue
+    fi
+    if [[ "$shell" == fish ]]; then
+      # fish は POSIX 非互換なので parse-only は stdin 経由 (上の (1) と同型)
+      ok=0; fish -n < "$tmpdir/self.fish" 2>"$tmpdir/err.self.$shell" && ok=1
+    else
+      ok=0; "$shell" -n "$tmpdir/self.$shell" 2>"$tmpdir/err.self.$shell" && ok=1
+    fi
+    if [[ "$ok" == 1 ]]; then
+      report ok "self def: $shell syntax-check"
+    else
+      report fail "self def: $shell syntax-check" "$(cat "$tmpdir/err.self.$shell")"
+    fi
+  done
+
+  if command -v bash >/dev/null 2>&1; then
+    make_query_mock "$tmpdir/self_mock" "$KUU_CLI_DEF"
+    "$KUU_CLI" completion generate "$KUU_CLI_DEF" \
+      --shell bash --binary "$tmpdir/self_mock" --uuid "$uuid" \
+      > "$tmpdir/self.bash.mock"
+
+    # (4b) 自分自身の subcommand と global option が候補に出る (`kuu <TAB>`)。
+    # 実端末 bash 5.3.9 の観測形: COMP_WORDS=(kuu "") / COMP_CWORD=1。
+    out=$(drive_bash_completion "$tmpdir/self.bash.mock" _kuu 1 kuu "")
+    assert_candidates "self def: top-level candidates" "$out" \
+      parse complete validate help completion --help --version
+
+    # (4c) 2 段目の subcommand (`kuu completion <TAB>`)。最小 def は 1 階層しか持たないので、
+    # **command の入れ子が glue まで通る**ことはここでしか確認できない。
+    out=$(drive_bash_completion "$tmpdir/self.bash.mock" _kuu 2 kuu completion "")
+    assert_candidates "self def: nested subcommand candidates" "$out" generate query
+
+    # (4d) enum values (`kuu completion generate --shell <TAB>`)。option の `values` が
+    # 値位置の候補として glue へ流れることを確認する (最小 def は values を持たない)。
+    out=$(drive_bash_completion "$tmpdir/self.bash.mock" _kuu 4 kuu completion generate --shell "")
+    assert_candidates "self def: option enum values" "$out" zsh bash fish
+
+    # (4e) COMP_WORDBREAKS 再結合 (H9)。bash は `=` で COMP_WORDS を割るため、glue が
+    # 割れたトークンを再結合してから binary へ渡す必要がある (DR-117 §3.4 の words 契約)。
+    # 下の COMP_WORDS / COMP_CWORD は **実端末 bash 5.3.9 で観測した実形** (tmux 上で
+    # complete -F の中から COMP_WORDS を dump して採取):
+    #   `kuu parse --config-file=<TAB>`    → (kuu parse --config-file =)      CWORD=3
+    #   `kuu parse --config-file=/et<TAB>` → (kuu parse --config-file = /et)  CWORD=4
+    # 期待は「再結合後の words が eq 形 1 トークンに戻り、cword がそれを指す」こと。
+    make_recorder_mock "$tmpdir/self_recorder" "$tmpdir/rec.log"
+    "$KUU_CLI" completion generate "$KUU_CLI_DEF" \
+      --shell bash --binary "$tmpdir/self_recorder" --uuid "$uuid" \
+      > "$tmpdir/self.bash.rec"
+    check_words() { # label  want_log  cword  comp_words...
+      local label="$1" want="$2" cword="$3"; shift 3
+      rm -f "$tmpdir/rec.log"
+      bash -c '
+        source "'"$tmpdir/self.bash.rec"'"
+        COMP_WORDS=('"$(printf '%q ' "$@")"')
+        COMP_CWORD='"$cword"'
+        _kuu
+      ' >/dev/null 2>&1 || true
+      local got
+      got=$(cat "$tmpdir/rec.log" 2>/dev/null || true)
+      if [[ "$got" == "$want" ]]; then
+        report ok "self def: $label"
+      else
+        report fail "self def: $label" "got=$(tr '\n' '|' <<<"$got") want=$(tr '\n' '|' <<<"$want")"
+      fi
+    }
+    check_words "COMP_WORDBREAKS rejoin (--config-file=)" \
+      "$(printf 'cword=2\nword=<kuu>\nword=<parse>\nword=<--config-file=>')" \
+      3 kuu parse --config-file =
+    check_words "COMP_WORDBREAKS rejoin (--config-file=/et)" \
+      "$(printf 'cword=2\nword=<kuu>\nword=<parse>\nword=<--config-file=/et>')" \
+      4 kuu parse --config-file = /et
+  else
+    # bash 不在時も報告件数を揃える (件数だけ見て回帰を判定できるようにする)
+    report skip "self def: top-level candidates" "bash not found"
+    report skip "self def: nested subcommand candidates" "bash not found"
+    report skip "self def: option enum values" "bash not found"
+    report skip "self def: COMP_WORDBREAKS rejoin (--config-file=)" "bash not found"
+    report skip "self def: COMP_WORDBREAKS rejoin (--config-file=/et)" "bash not found"
+  fi
 fi
 
 # ---- summary --------------------------------------------------------------

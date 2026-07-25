@@ -94,9 +94,14 @@ self-dogfood: generate-self-definition
 # bash 関数直呼び (mock binary 経由の form-A end-to-end) + 形態 B `kuu completion query` の
 # 候補列挙。fish 未インストール環境では該当 assertion を skip する。zsh 関数直呼びは compinit
 # 依存で CI 化が難しく本 smoke ではスコープ外 (findings §5.2 に従い段 1 tmux 実端末マトリクスへ委ねる)。
+#
+# 加えて **self-dogfood** (findings 2026-07-24 §4.3): 出荷される cli/kuu-cli.def.json を
+# そのまま食わせて kuu-cli 自身の補完 glue を生成し、3 shell syntax-check + 自分の subcommand
+# 候補 + COMP_WORDBREAKS 再結合 (H9) を確認する。そのため KUU_CLI_DEF を渡す。
 smoke: generate-self-definition
     cd "{{MBT_ROOT}}" && moon build --target native
     KUU_CLI="{{MBT_ROOT}}/_build/native/debug/build/kawaz/kuu-cli-mbt/main/main.exe" \
+      KUU_CLI_DEF="{{MBT_ROOT}}/cli/kuu-cli.def.json" \
       bash "{{MBT_ROOT}}/tests/smoke/completion_smoke.sh"
 
 # CLI レベル e2e: kuu/fixtures の代表 case を fixture 本体から case id 経由で消費し、compiled
