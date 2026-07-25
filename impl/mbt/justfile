@@ -259,17 +259,23 @@ e2e: generate-self-definition
     printf "e2e OK: deprecated.json %s -> success, warnings=%s, no @depr in effects\n" "$id" "$(jq -c '.warnings' <<<"$out")"
 
     # ── kuu-cli 自身の canonical help: 内部設計参照と日本語を公開文言へ漏らさない ──
-    help_out=$("$bin" --help)
-    dr_count=$(grep -c 'DR-[0-9]' <<<"$help_out" || true)
+    # renderer は scope ごとに文言を組み立てるので root だけでは足りない。3 階層すべて
+    # (root / 直下の command / 孫 command) を回す。
+    #
     # 日本語検出は「非 ASCII 行の有無」で見る。`[ぁ-んァ-ヶ一-龠]` のようなマルチバイト
     # 文字範囲は locale 依存で、C locale (Linux CI 既定) の grep では "Invalid range end"
     # となり `|| true` に飲まれて空文字を返す (実測: 2026-07-25 CI red)。LC_ALL=C の
     # バイト単位判定なら BSD/GNU grep とも同じ挙動になり、かつ公開 help を純 ASCII に
     # 保つというより強い不変条件を張れる。
-    non_ascii_count=$(LC_ALL=C grep -c '[^ -~	]' <<<"$help_out" || true)
-    assert_eq "self help DR reference count" "$dr_count" "0"
-    assert_eq "self help non-ASCII line count" "$non_ascii_count" "0"
-    printf "e2e OK: self help contains no DR references and is pure ASCII\n"
+    for scope in "" "parse" "complete" "validate" "help" "completion" "completion generate" "completion query"; do
+      help_out=$("$bin" $scope --help)
+      label="${scope:-<root>}"
+      dr_count=$(grep -c 'DR-[0-9]' <<<"$help_out" || true)
+      non_ascii_count=$(LC_ALL=C grep -c '[^ -~	]' <<<"$help_out" || true)
+      assert_eq "self help ($label) DR reference count" "$dr_count" "0"
+      assert_eq "self help ($label) non-ASCII line count" "$non_ascii_count" "0"
+    done
+    printf "e2e OK: self help (8 scopes) contains no DR references and is pure ASCII\n"
 
     # ── bool missing operand: flag 宣言への移行 hint は bool 要素だけに出す ──
     printf '%s\n' '{"name":"hint-test","options":[{"name":"enabled","type":"bool","long":true},{"name":"label","type":"string","long":true}]}' > "$def_only"
