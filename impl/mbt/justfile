@@ -258,10 +258,15 @@ e2e: generate-self-definition
     # ── kuu-cli 自身の canonical help: 内部設計参照と日本語を公開文言へ漏らさない ──
     help_out=$("$bin" --help)
     dr_count=$(grep -c 'DR-[0-9]' <<<"$help_out" || true)
-    japanese_count=$(grep -Ec '[ぁ-んァ-ヶ一-龠]' <<<"$help_out" || true)
+    # 日本語検出は「非 ASCII 行の有無」で見る。`[ぁ-んァ-ヶ一-龠]` のようなマルチバイト
+    # 文字範囲は locale 依存で、C locale (Linux CI 既定) の grep では "Invalid range end"
+    # となり `|| true` に飲まれて空文字を返す (実測: 2026-07-25 CI red)。LC_ALL=C の
+    # バイト単位判定なら BSD/GNU grep とも同じ挙動になり、かつ公開 help を純 ASCII に
+    # 保つというより強い不変条件を張れる。
+    non_ascii_count=$(LC_ALL=C grep -c '[^ -~	]' <<<"$help_out" || true)
     assert_eq "self help DR reference count" "$dr_count" "0"
-    assert_eq "self help Japanese character count" "$japanese_count" "0"
-    printf "e2e OK: self help contains no DR references or Japanese text\n"
+    assert_eq "self help non-ASCII line count" "$non_ascii_count" "0"
+    printf "e2e OK: self help contains no DR references and is pure ASCII\n"
 
     # ── bool missing operand: flag 宣言への移行 hint は bool 要素だけに出す ──
     printf '%s\n' '{"name":"hint-test","options":[{"name":"enabled","type":"bool","long":true},{"name":"label","type":"string","long":true}]}' > "$def_only"
