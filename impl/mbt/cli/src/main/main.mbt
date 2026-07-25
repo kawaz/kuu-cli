@@ -47,16 +47,19 @@ fn main {
   match @kuu.parse(self_ast, args, sources~) {
     @kuu.Failure(failure) => handle_self_failure(failure)
     @kuu.Ambiguous(ambiguity) => {
+      // 解釈の提示は parse 相の view で行う (DR-118 §3): 値源ラダーを適用すると env / config /
+      // default 由来の値が比較ビューに混ざり、どの解釈が argv のどこを取り合っているのかが
+      // 見えなくなる。resolve_interpretation は「解釈を 1 つ選んで前進する」ための API であって
+      // 並べて見せるためのものではない。
       eprintln("kuu: command line is ambiguous")
       for interpretation in ambiguity.interpretations {
         let claimants = interpretation.claimants()
         for claimant in claimants {
           eprintln("  " + claimant.0 + ": " + claimant.1)
         }
-        match @kuu.resolve_interpretation(self_ast, interpretation, args, sources~) {
-          @kuu.Success(resolved) => eprintln(result_repr(@kuu.output(self_ast, resolved).result))
-          @kuu.Failure(_) => eprintln("  interpretation failed during resolve")
-        }
+        eprintln(
+          "  " + result_repr(@kuu.output_of_interpretation(self_ast, interpretation)),
+        )
       }
       die(2)
     }
