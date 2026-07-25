@@ -274,8 +274,19 @@ e2e: generate-self-definition
       non_ascii_count=$(LC_ALL=C grep -c '[^ -~	]' <<<"$help_out" || true)
       assert_eq "self help ($label) DR reference count" "$dr_count" "0"
       assert_eq "self help ($label) non-ASCII line count" "$non_ascii_count" "0"
+      # 出た help が **要求した scope のもの** であること。root へ落ちる回帰
+      # (`--help` が立った時に dispatch が scope path を組まない形) をここで検出する。
+      want_usage="Usage: kuu${scope:+ $scope} "
+      got_usage=$(head -1 <<<"$help_out")
+      case "$got_usage" in
+        "$want_usage"*) ;;
+        *)
+          printf >&2 "e2e FAIL (self help (%s) scope): got=%s want prefix=%s\n" "$label" "$got_usage" "$want_usage"
+          exit 1
+          ;;
+      esac
     done
-    printf "e2e OK: self help (8 scopes) contains no DR references and is pure ASCII\n"
+    printf "e2e OK: self help (8 scopes) renders its own scope, no DR references, pure ASCII\n"
 
     # ── bool missing operand: flag 宣言への移行 hint は bool 要素だけに出す ──
     printf '%s\n' '{"name":"hint-test","options":[{"name":"enabled","type":"bool","long":true},{"name":"label","type":"string","long":true}]}' > "$def_only"

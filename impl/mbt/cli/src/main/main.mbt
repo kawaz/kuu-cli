@@ -129,12 +129,9 @@ fn print_self_help(path : Array[String]) -> Unit {
 
 fn dispatch(result : @kuu.ResultValue) -> Unit {
   let root = as_object(result, "root result")
-  match field_opt(root, "help") {
-    Some(@abi.Scalar(@abi.Bool(true))) => {
-      print_self_help([])
-      return
-    }
-    _ => ()
+  if help_requested(root) {
+    print_self_help(selected_command_path(root))
+    return
   }
   match string_field_opt(root, "version") {
     Some(_) => {
@@ -163,6 +160,63 @@ fn dispatch(result : @kuu.ResultValue) -> Unit {
           }
       }
   }
+}
+
+/// `--help` が立っているかを、同名キーの取り違えなしに判定する。
+///
+/// result の object は `Array[(String, ResultValue)]` で、**同じキーが複数並びうる**。
+/// kuu-cli の場合 `--help` option と `help` command がどちらも "help" を名乗るため、
+/// `kuu help --help` の result は `[("help", Bool(true)), ("help", Object{...})]` になる。
+/// 先頭一致で拾う `field_opt` では「option の bool」と「command の kv」を取り違えるので、
+/// ここは全エントリを走査して **bool として立っているもの**だけを見る。
+fn help_requested(fields : Array[(String, @kuu.ResultValue)]) -> Bool {
+  for field in fields {
+    if field.0 == "help" {
+      match field.1 {
+        @abi.Scalar(@abi.Bool(true)) => return true
+        _ => ()
+      }
+    }
+  }
+  false
+}
+
+/// help を出す対象の command path を result から導出する。
+///
+/// DESIGN §2.6 / DR-052: 結果キーを持つスコープ生成要素 (command 含む) は、選ばれたら子が
+/// 全部 absent でも空 kv `{}` を持つ。したがって「definition の commands に同名があり、値が
+/// object のキー」を再帰的に降りれば、選ばれた最深の command path が機械的に得られる。
+/// 失敗経路の `failure_path` (errors の path 由来) に対応する、成功経路側の scope 復元。
+fn selected_command_path(
+  fields : Array[(String, @kuu.ResultValue)],
+) -> Array[String] {
+  let path : Array[String] = []
+  let definition = @json.parse(SELF_DEFINITION_JSON) catch { _ => return path }
+  let mut scope = definition
+  let mut current = fields
+  while true {
+    let mut descended : Array[(String, @kuu.ResultValue)]? = None
+    for field in current {
+      match field.1 {
+        @abi.Object(child) =>
+          match definition_named_child(scope, "commands", field.0) {
+            Some(command) => {
+              path.push(field.0)
+              scope = command
+              descended = Some(child)
+              break
+            }
+            None => ()
+          }
+        _ => ()
+      }
+    }
+    match descended {
+      Some(child) => current = child
+      None => break
+    }
+  }
+  path
 }
 
 fn emit_payload(result : @lib.CmdResult) -> Unit {
