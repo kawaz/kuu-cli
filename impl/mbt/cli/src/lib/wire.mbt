@@ -17,8 +17,8 @@
 //   - `effects`: parse Success の生 binds (resolve 前) から DR-045 §1 効果列を組む
 //   - `result`: resolve Success の解決済み binds (値源ラダー充填後) から DR-052 result-key 軸
 //     を適用した kv projection
-//   - `sources`: resolve 済み出力に常時含める (DR-109 §3)。`{path, key, source}` entry の配列
-//     (DR-121 §1、CONFORMANCE §2)。順序は非規範、`(path, key)` は一意
+//   - `sources`: resolve 済み出力に常時含める (DR-109 §3)。result と同型で、各値の座を
+//     source タグへ置換した shadow tree (DR-122 / CONFORMANCE §2)
 //   - `warnings`: `@kuu.warnings(parse_outcome)` (kuu 玄関 API) → `{element, kind}` の object 配列
 //     (spec CONFORMANCE §2)。空でも `[]` を出す (fixture の `warnings: []` 期待と厳密一致)
 //   - `interpretations` (ambiguous): 各解釈の result ビュー (DR-053 §3)。resolve 相は適用しない
@@ -308,7 +308,7 @@ fn outcome_to_json(
           let view = @kuu.output(ast, rbinds)
           let effects = output_effects_to_json(pbinds.effects(ast))
           let result = rval_to_json(view.result)
-          let sources = source_entries_to_json(view.sources)
+          let sources = rval_to_json(view.sources)
           // warnings は空でも `[]` を出す (DR-109 §2 の厳密一致 — fixture の `warnings: []`
           // 期待と同形)。
           let ws = po.warnings()
@@ -349,33 +349,6 @@ fn outcome_to_json(
       (Json::object(Map::from_array(fields)), 1)
     }
   }
-}
-
-///|
-/// `sources`: resolve 済み出力の値源を **entry の配列**として出す (DR-121 §1、DR-109 §3 で
-/// 常時出力)。各 entry は `{"path": [...], "key": "...", "source": "..."}` — **`path` と `key` を
-/// 連結した文字列を作らない** (DR-121 §1.1)。連結形は非単射で、`export_key: "a.b"` の leaf と
-/// scope `a` 配下の `b` のように `result` が区別する 2 つの結果アドレスが同じキーへ潰れる。
-/// 射影本体は front_door の `OutputView.sources` (`@kuu.output`) — ここは SourceEntry 列を
-/// JSON へ写すだけ。
-fn source_entries_to_json(entries : Array[@kuu.SourceEntry]) -> Json {
-  let items : Array[Json] = []
-  for e in entries {
-    let path : Array[Json] = []
-    for seg in e.path {
-      path.push(Json::string(seg))
-    }
-    items.push(
-      Json::object(
-        Map::from_array([
-          ("path", Json::array(path)),
-          ("key", Json::string(e.key)),
-          ("source", Json::string(source_str(e.source))),
-        ]),
-      ),
-    )
-  }
-  Json::array(items)
 }
 
 ///|
