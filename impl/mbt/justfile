@@ -486,8 +486,13 @@ conformance: generate-self-definition
                 ] | sort_by(tostring)' <<<"$out")
               ;;
             interpretations|tried_triggers|warnings)
-              want=$(jq -cS --argjson i "$i" ".cases[\$i].expect.\"$key\" | sort_by(tostring)" "$fx")
-              got=$(jq -cS ".\"$key\" | if type==\"array\" then sort_by(tostring) else . end" <<<"$out")
+              # -S (キーソート) を **sort_by の前に** 適用する 2 段パイプ。1 段で書くと
+              # sort_by(tostring) が正規化前のキー順を含む文字列で並べるため、要素の中身が
+              # 同じでもキー順が違えば整列結果が食い違う (実測 2026-07-26: interpretations の
+              # 要素が {color,rest} と {rest,color} で並びが逆転し fail)。e2e 側の
+              # canon_interps() と同じ形。
+              want=$(jq -cS --argjson i "$i" ".cases[\$i].expect.\"$key\"" "$fx" | jq -cS 'sort_by(tojson)')
+              got=$(jq -cS ".\"$key\"" <<<"$out" | jq -cS 'if type=="array" then sort_by(tojson) else . end')
               ;;
             *)
               # walk(.+0): JSON 数値の表現差 (-1.0 vs -1) を値で正規化 (構造等価 = 表現非規範、
