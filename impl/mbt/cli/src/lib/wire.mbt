@@ -601,10 +601,12 @@ fn effect_op_str(op : @kuu.EffectOp) -> String {
 fn source_str(s : @kuu.Source) -> String {
   match s {
     @abi.Cli => "cli"
+    @abi.Link => "link"
     @abi.Env => "env"
     @abi.Config => "config"
     @abi.Inherit => "inherit"
     @abi.Tty => "tty"
+    @abi.Const => "const"
     @abi.Default => "default"
   }
 }
