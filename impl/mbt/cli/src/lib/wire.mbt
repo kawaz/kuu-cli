@@ -605,6 +605,7 @@ fn deferr_kind_str(k : @kuu.DefErrorKind) -> String {
     @abi.ConfigCycle => "config-cycle"
     @abi.InvalidArgument => "invalid-argument"
     @abi.ExportKeyCollision => "export-key-collision"
+    @abi.Unsupported => "unsupported"
   }
 }
 
