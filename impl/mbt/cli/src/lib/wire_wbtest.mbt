@@ -101,8 +101,8 @@ test "cmd_parse export_key: result キーだけ rename、effects の entity は 
 }
 
 ///|
-/// failure path with a type-parse reject (fixture pattern separator-typed.json ::
-/// option-separator-piece-parse-rejected — the 2nd piece 'abc' fails number type parse).
+/// The separator commits the option reading before parsing each piece. A lexical ValueSpaceMiss in
+/// the second piece therefore remains a visible not_a_number diagnostic and the payload exits 1.
 test "cmd_parse failure — number type parse rejects 'abc'" {
   let def =
     #|{"options": [{"name": "ports", "type": "number", "long": true, "multiple": {"accumulator": "append", "separator": ","}}]}
@@ -110,13 +110,12 @@ test "cmd_parse failure — number type parse rejects 'abc'" {
   inspect(r.exit, content="1")
   let j = @json.parse(r.json)
   inspect(jstr(jkey(j, "outcome")), content="failure")
-  let errs = jarr(jkey(j, "errors"))
-  inspect(errs.length(), content="1")
-  let e = errs[0]
-  inspect(jstr(jkey(e, "element")), content="ports")
-  inspect(jstr(jkey(e, "kind")), content="parse")
-  inspect(jstr(jkey(e, "reason")), content="not_a_number")
-  inspect(jnum(jkey(e, "args_pos")), content="1")
+  let errors = jarr(jkey(j, "errors"))
+  inspect(errors.length(), content="1")
+  inspect(jstr(jkey(errors[0], "element")), content="ports")
+  inspect(jstr(jkey(errors[0], "kind")), content="parse")
+  inspect(jstr(jkey(errors[0], "reason")), content="not_a_number")
+  inspect(jnum(jkey(errors[0], "args_pos")), content="1")
 }
 
 ///|
