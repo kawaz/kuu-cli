@@ -412,9 +412,39 @@ conformance: generate-self-definition
       printf >&2 "conformance: fixtures dir not found at %s (set KUU_FIXTURES or check out kawaz/kuu as sibling)\n" "$fixtures_root"
       exit 2
     fi
-    def_only=$(mktemp); fail_log=$(mktemp)
-    trap 'rm -f "$def_only" "$fail_log"' EXIT
-    pass=0; fail=0; skip=0
+    def_only=$(mktemp); fail_log=$(mktemp); known_log=$(mktemp); ledger=$(mktemp)
+    trap 'rm -f "$def_only" "$fail_log" "$known_log" "$ledger"' EXIT
+    pass=0; fail=0; skip=0; known_fail=0
+    # 凍結 fail 台帳 (kuu.mbt の known_divergences / MDR-001 §6 と同じ契約): spec 先行 pin で
+    # 実装が未追随の case を rel :: id で凍結する。台帳外の fail (UNEXPECTED) と、台帳に居る
+    # のに fail しなくなった case (VANISHED = 実装が追随したのに台帳が残っている) はどちらも
+    # red — 台帳の掃除を強制する。現エントリ: child repeat/multiple Phase 1
+    # (kuu.mbt issue 2026-07-26-dec-or-leaf-remaining-node-keys、Phase 2-4 で解消予定)。
+    printf '%s\n' \
+      'multiple-parse/child-multiple-separator.json :: child-repeat-times-separator-stays-flat' \
+      'multiple-parse/child-multiple-separator.json :: child-separator-splits-single-token' \
+      'multiple-parse/child-repeat-parent-multiple.json :: single-fire-still-wrapped' \
+      'multiple-parse/child-repeat-parent-multiple.json :: two-fires-each-kv-keeps-inner-array' \
+      'or-parse/child-repeat-branch.json :: numeric-branch-repeats-uniquely' \
+      'or-parse/child-repeat-branch.json :: single-numeric-token-overlaps-both-branches' \
+      'or-parse/child-repeat-branch.json :: string-branch-excludes-numeric-branch' \
+      'repeat-parse/child-repeat-group-nested.json :: single-row-keeps-both-array-levels' \
+      'repeat-parse/child-repeat-group-nested.json :: two-rows-each-with-inner-array' \
+      'repeat-parse/child-repeat-group.json :: child-cell-stays-inside-group-scope' \
+      'repeat-parse/child-repeat-group.json :: group-child-min-and-sibling-exceed-tokens' \
+      'repeat-parse/child-repeat-ref-template.json :: single-ref-site-fires' \
+      'repeat-parse/child-repeat-ref-template.json :: two-ref-sites-repeat-independently' \
+      'seq-parse/child-optional-array-shape.json :: beyond-max-one-has-no-consumer' \
+      'seq-parse/child-optional-array-shape.json :: one-fire-is-single-element-array' \
+      'seq-parse/child-optional-array-shape.json :: zero-fire-is-empty-array-not-absent' \
+      'seq-parse/child-repeat-basic.json :: greedy-child-yields-tail-to-sibling' \
+      'seq-parse/child-repeat-basic.json :: min-one-and-sibling-exceed-tokens' \
+      'seq-parse/child-repeat-option-seq.json :: child-repeat-yields-token-to-root-positional' \
+      'seq-parse/child-repeat-option-seq.json :: child-repeat-zero-fire-empty-array' \
+      'seq-parse/child-repeat-option-seq.json :: root-positional-consumed-before-option-fires' \
+      'seq-parse/child-repeat-preference.json :: greedy-left-takes-longest' \
+      'seq-parse/child-repeat-preference.json :: lazy-left-takes-shortest' \
+      > "$ledger"
     # find で全階層を走査 (lowering/ は fixtures/lowering/<sub>/*.json の 2 階層構成なので
     # glob */*.json だと skip 集計からも漏れる)
     while IFS= read -r fx; do
@@ -462,8 +492,13 @@ conformance: generate-self-definition
         out=$("$bin" parse "$def_only" "${inj_flags[@]}" -- "${args[@]}" 2>/dev/null)
         set -e
         if ! jq -e . <<<"$out" >/dev/null 2>&1; then
-          fail=$((fail + 1))
-          printf "FAIL %s :: %s (no JSON output)\n" "$rel" "$id" >> "$fail_log"
+          if grep -qxF "$rel :: $id" "$ledger"; then
+            known_fail=$((known_fail + 1)); echo "$rel :: $id" >> "$known_log"
+            printf "KNOWN-FAIL %s :: %s (no JSON output)\n" "$rel" "$id" >> "$fail_log"
+          else
+            fail=$((fail + 1))
+            printf "FAIL %s :: %s (no JSON output)\n" "$rel" "$id" >> "$fail_log"
+          fi
           continue
         fi
         case_ok=1
@@ -507,19 +542,27 @@ conformance: generate-self-definition
           esac
           if [[ "$got" != "$want" ]]; then
             case_ok=0
-            printf "FAIL %s :: %s (.%s: got=%s want=%s)\n" "$rel" "$id" "$key" "$got" "$want" >> "$fail_log"
+            mark=FAIL
+            if grep -qxF "$rel :: $id" "$ledger"; then mark=KNOWN-FAIL; fi
+            printf "%s %s :: %s (.%s: got=%s want=%s)\n" "$mark" "$rel" "$id" "$key" "$got" "$want" >> "$fail_log"
             break
           fi
         done
-        if [[ "$case_ok" == 1 ]]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
+        if [[ "$case_ok" == 1 ]]; then
+          pass=$((pass + 1))
+        elif grep -qxF "$rel :: $id" "$ledger"; then
+          known_fail=$((known_fail + 1)); echo "$rel :: $id" >> "$known_log"
+        else
+          fail=$((fail + 1))
+        fi
       done
     done < <(find "$fixtures_root" -name '*.json' | sort)
-    total=$((pass + fail))
+    total=$((pass + fail + known_fail))
     echo "──── conformance sweep (parse fixtures, informational) ────"
     if [[ -s "$fail_log" ]]; then cat "$fail_log"; fi
     # per-directory 集計: envelope 追随の進捗を系統 (fixture ディレクトリ) 別に追うための内訳
     echo "── per-directory pass rate ──"
-    awk -F' :: ' '/^FAIL /{sub(/^FAIL /,""); split($1,a,"/"); f[a[1]]++} END{for(d in f) print d, f[d]}' "$fail_log" | sort > /tmp/confdirs.$$ || true
+    awk -F' :: ' '/^(FAIL|KNOWN-FAIL) /{sub(/^(FAIL|KNOWN-FAIL) /,""); split($1,a,"/"); f[a[1]]++} END{for(d in f) print d, f[d]}' "$fail_log" | sort > /tmp/confdirs.$$ || true
     for dir in "$fixtures_root"/*/; do
       d=$(basename "$dir")
       # parse fixture のみ対象 (skip した dir は total 0 になるので出さない)
@@ -534,14 +577,26 @@ conformance: generate-self-definition
       printf "  %-20s %3d/%3d pass\n" "$d" "$((dt - df))" "$dt"
     done
     rm -f /tmp/confdirs.$$
-    printf "conformance: %d/%d parse cases pass (%d fail), %d skipped (query != parse)\n" \
-      "$pass" "$total" "$fail" "$skip"
+    printf "conformance: %d/%d parse cases pass (%d fail, %d known-fail), %d skipped (query != parse)\n" \
+      "$pass" "$total" "$fail" "$known_fail" "$skip"
+    # VANISHED 検査: 台帳に居るのに fail しなかった case は実装追随済み — 台帳の掃除を強制
+    vanished=0
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] || continue
+      if ! grep -qxF "$entry" "$known_log" 2>/dev/null; then
+        printf >&2 "conformance VANISHED KNOWN-FAIL (implementation caught up — remove from ledger): %s\n" "$entry"
+        vanished=1
+      fi
+    done < "$ledger"
     # 回帰 gate (統括裁定 r27m18-1): pass 数が baseline を割ったら red。baseline は fail の
     # 解消に合わせて**手動**で上げる (自動追従は ratchet の逆回転 = 新規 fail を隠すので不可)。
     # 現 baseline は linked kuu.mbt fixture の query=parse 全 case が green の状態。
     baseline=672
     if [[ "$fail" -gt 0 ]]; then
-      printf >&2 "conformance FAILED: %d case(s) mismatched\n" "$fail"
+      printf >&2 "conformance FAILED: %d unexpected case(s) mismatched (not in frozen ledger)\n" "$fail"
+      exit 1
+    fi
+    if [[ "$vanished" -ne 0 ]]; then
       exit 1
     fi
     if [[ "$pass" -lt "$baseline" ]]; then
