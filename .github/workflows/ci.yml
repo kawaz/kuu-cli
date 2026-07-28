@@ -32,12 +32,12 @@ jobs:
           ref: 117b24dfa188e578989590104d8c67c27726226a
           path: _kuu-spec
 
-      # 公式 install script で rolling nightly を直取得 (moonup の nightly index は
-      # 1 日遅延することがあり、toolchain 移行日にローカルと CI で版が割れるため。
-      # kuu.mbt の ci.yml と同方式)
-      - name: Install MoonBit (nightly)
+      # 公式 install script で rolling stable を直取得。publish 後の第三者ビルドは stable
+      # 前提なので「stable でビルドできる」を CI の不変条件にする (kuu.mbt の ci.yml と同方式、
+      # 2026-07-29 統一)
+      - name: Install MoonBit (stable)
         run: |
-          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s nightly
+          curl -fsSL https://cli.moonbitlang.com/install/unix.sh | bash -s
           echo "$HOME/.moon/bin" >> "$GITHUB_PATH"
       - run: moon version --all
       - run: moon update
