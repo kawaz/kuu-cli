@@ -43,6 +43,13 @@ impl-mbt-conformance:
 impl-mbt-help-conformance:
     cd impl/mbt && just help-conformance
 
+# cli パッケージの行カバレッジ (on-demand 計測、gate ではない。詳細は impl/mbt/justfile の coverage)
+impl-mbt-coverage:
+    cd impl/mbt && just coverage
+
+impl-mbt-coverage-html:
+    cd impl/mbt && just coverage-html
+
 # ---------- push flow (bump-semver canonical 模倣) ----------
 
 # working copy is clean (= 未コミット変更を巻き込ませない)

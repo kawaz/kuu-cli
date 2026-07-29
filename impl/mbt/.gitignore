@@ -7,3 +7,6 @@
 /_build
 /cli/_build
 /.mooncakes
+
+# HTML coverage report (`just coverage-html`)
+/_coverage

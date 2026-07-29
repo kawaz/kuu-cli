@@ -83,6 +83,33 @@ test: setup generate-self-definition
     cd "{{MBT_ROOT}}" && just e2e
     cd "{{MBT_ROOT}}" && just smoke
 
+# ---------- coverage ----------
+#
+# on-demand 計測。lint / test gate には入れない (CI 化の要否は未設計 — 必要になった
+# 時点で kawaz と決める)。moon.work の member である deps/kuu.mbt も instrumentation
+# 対象になるので、レポートは -p で cli パッケージだけに絞る (kuu.mbt 本体の計測は
+# 当該リポの `just coverage` が担当)。同じ理由で deps/kuu.mbt 側に古い trace が
+# 残っていても cli の集計には影響しない。
+
+# cli パッケージの行カバレッジ (test recipe と同じ moon test cli/src/lib のスコープ)
+[script]
+coverage: setup generate-self-definition
+    cd "{{MBT_ROOT}}"
+    moon coverage clean
+    log="$(mktemp)"
+    trap 'rm -f "$log"' EXIT
+    if ! moon test cli/src/lib --target native --enable-coverage >"$log" 2>&1; then
+        cat >&2 "$log"
+        exit 1
+    fi
+    tail -1 "$log"
+    moon coverage report -f summary -p kawaz/kuu-cli-mbt/lib
+
+# 行単位で未到達箇所を色分けした HTML レポートを impl/mbt/_coverage/index.html に出力
+coverage-html: coverage
+    cd "{{MBT_ROOT}}" && moon coverage report -f html -p kawaz/kuu-cli-mbt/lib
+    @echo "open impl/mbt/_coverage/index.html"
+
 # kuu-cli 自身の definition を kuu.mbt で decode/lowering し、代表 argv の result shape を固定する。
 self-dogfood: generate-self-definition
     cd "{{MBT_ROOT}}" && moon build --target native
