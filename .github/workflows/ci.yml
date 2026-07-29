@@ -22,14 +22,14 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: kawaz/kuu.mbt
-          ref: 7068f0249b2b6e3c692a49f405764b716e7c3f5b
+          ref: 8671ce783a352300a8fc45031f5bc026351e9931
           path: impl/mbt/deps/kuu.mbt
 
       - name: Checkout kuu spec fixtures (SHA-pinned)
         uses: actions/checkout@v7
         with:
           repository: kawaz/kuu
-          ref: 290370919dd5aa1447cd1716944f1a240b363e63
+          ref: 963b8715ffbc7668132f58d05c971a39a637d6d2
           path: _kuu-spec
 
       # 公式 install script で rolling stable を直取得。publish 後の第三者ビルドは stable

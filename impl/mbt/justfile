@@ -118,7 +118,7 @@ smoke: generate-self-definition
 #   - export-key/rename                     :: rename-projection               (export_key: result rename)
 #   - export-key/collision                  :: mapped-pair-shares-key          (DR-120 definition-error の (element, kind) 全列挙)
 #   - path-search/variable-arity-ambiguous  :: color-arity-vs-name-receptacle  (構造的 Ambiguous = C-1 の再発検知軸)
-#   - inheritable-parse/basic               :: ancestor-inherit-flowdown       (resolve 相の inherit 流下 = C-1 の再発検知軸)
+#   - value-sources/inherit-ladder          :: parent-default-inherited        (resolve 相の inherit 流下 = C-1 の再発検知軸)
 #   - alias-parse/deprecated                :: deprecated-entry-warns          (構造化 warnings + sentinel 除外 = M-1 の再発検知軸)
 #
 # **spec fixture の緩比較全体 (CONFORMANCE.md §3) を再現するのはスコープ外** (v1 決定リスト 8、
@@ -249,20 +249,21 @@ e2e: generate-self-definition
               "$(read_case_expect "$fixture" "$id" '.' | canon_interps)"
     printf "e2e OK: variable-arity-ambiguous.json %s -> ambiguous, interpretations=%s\n" "$id" "$(jq -c '.interpretations' <<<"$out")"
 
-    # ── case 4: inheritable-parse/basic :: ancestor-inherit-flowdown (resolve 相の inherit 流下) ──
+    # ── case 4: value-sources/inherit-ladder :: parent-default-inherited (resolve 相の inherit 流下) ──
     # front_door.resolve が値源ラダーの inherit 席を子 scope まで流下させるかを CLI 経由で pin。
-    # C-1 の再発検知軸: 玄関 `parse` だけ呼んで `resolve` を呼び忘れると result.sub が空になる
-    # (旧 wire.mbt が実際にこのバグを持っていた)。fixture 期待の result.sub.ttl (=30) が実バイナリの
-    # 出力と一致することで、resolve 相の起動と inherit の流下を同時に確認する。
-    fixture="{{FIXTURES}}/inheritable-parse/basic.json"
-    id="ancestor-inherit-flowdown"
+    # C-1 の再発検知軸: 玄関 `parse` だけ呼んで `resolve` を呼び忘れると result.up が空になる
+    # (旧 wire.mbt が実際にこのバグを持っていた)。fixture 期待の result.up.ttl (=30、親 default が
+    # inherit で流下) が実バイナリの出力と一致することで、resolve 相の起動と inherit の流下を
+    # 同時に確認する。
+    fixture="{{FIXTURES}}/value-sources/inherit-ladder.json"
+    id="parent-default-inherited"
     jq '.definition' "$fixture" > "$def_only"
     mapfile -t args < <(read_case_args "$fixture" "$id")
     out=$("$bin" parse "$def_only" -- "${args[@]}")
-    assert_eq "$id outcome"        "$(jq -r '.outcome'         <<<"$out")" "success"
-    assert_eq "$id result.sub.ttl" "$(jq -c '.result.sub.ttl'  <<<"$out")" "$(read_case_expect "$fixture" "$id" '.result.sub.ttl')"
-    assert_eq "$id result.ttl"     "$(jq -c '.result.ttl'      <<<"$out")" "$(read_case_expect "$fixture" "$id" '.result.ttl')"
-    printf "e2e OK: inheritable basic.json %s -> success, result=%s\n" "$id" "$(jq -c '.result' <<<"$out")"
+    assert_eq "$id outcome"       "$(jq -r '.outcome'        <<<"$out")" "success"
+    assert_eq "$id result.up.ttl" "$(jq -c '.result.up.ttl'  <<<"$out")" "$(read_case_expect "$fixture" "$id" '.result.up.ttl')"
+    assert_eq "$id result.ttl"    "$(jq -c '.result.ttl'     <<<"$out")" "$(read_case_expect "$fixture" "$id" '.result.ttl')"
+    printf "e2e OK: inherit-ladder.json %s -> success, result=%s\n" "$id" "$(jq -c '.result' <<<"$out")"
 
     # ── case 5: alias-parse/deprecated :: deprecated-entry-warns (構造化 warnings + sentinel 除外) ──
     # spec CONFORMANCE §2 の warnings 面 (`[{element, kind}]`) と、@depr sentinel が effects に
@@ -428,6 +429,9 @@ conformance: generate-self-definition
       'value-typing/none-exclusion-in-renamed-repeat-rows.json :: single-renamed-row-baseline' \
       'value-typing/none-exclusion-in-repeat-rows.json :: none-cell-absent-from-every-repeat-row' \
       'value-typing/none-exclusion-in-repeat-rows.json :: single-row-baseline' \
+      'value-sources/inherit-from-ladder.json :: outer-write-inherited' \
+      'value-sources/inherit-from-ladder.json :: inner-cli-over-inherit' \
+      'value-sources/inherit-from-ladder.json :: own-default-fallback' \
       > "$ledger"
     # find で全階層を走査 (lowering/ は fixtures/lowering/<sub>/*.json の 2 階層構成なので
     # glob */*.json だと skip 集計からも漏れる)
@@ -575,7 +579,7 @@ conformance: generate-self-definition
     # 回帰 gate (統括裁定 r27m18-1): pass 数が baseline を割ったら red。baseline は fail の
     # 解消に合わせて**手動**で上げる (自動追従は ratchet の逆回転 = 新規 fail を隠すので不可)。
     # 現 baseline は linked kuu.mbt fixture の query=parse 全 case が green の状態。
-    baseline=734
+    baseline=720
     if [[ "$fail" -gt 0 ]]; then
       printf >&2 "conformance FAILED: %d unexpected case(s) mismatched (not in frozen ledger)\n" "$fail"
       exit 1
