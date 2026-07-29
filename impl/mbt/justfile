@@ -420,7 +420,15 @@ conformance: generate-self-definition
     # のに fail しなくなった case (VANISHED = 実装が追随したのに台帳が残っている) はどちらも
     # red — 台帳の掃除を強制する。現エントリ: child repeat/multiple Phase 1
     # (kuu.mbt issue 2026-07-26-dec-or-leaf-remaining-node-keys、Phase 2-4 で解消予定)。
-    : > "$ledger"  # 現在空 (child repeat/multiple Phase 2-5 が実装追随、2026-07-29 掃除)
+    # projection gaps batch (spec 先行 pin、2026-07-29): kuu.mbt 側の凍結 divergence/skip と同根
+    # (or-accum 未選択枝漏れ / inline seq repeat 行崩壊 + none 漏れ / seq 子 export_key decode gap)。
+    printf '%s\n' \
+      'or-parse/accum-branch-rows-sources.json :: two-fires-different-branches-elementwise-shadow' \
+      'value-typing/none-exclusion-in-renamed-repeat-rows.json :: none-excluded-under-renamed-row-scope-and-cell' \
+      'value-typing/none-exclusion-in-renamed-repeat-rows.json :: single-renamed-row-baseline' \
+      'value-typing/none-exclusion-in-repeat-rows.json :: none-cell-absent-from-every-repeat-row' \
+      'value-typing/none-exclusion-in-repeat-rows.json :: single-row-baseline' \
+      > "$ledger"
     # find で全階層を走査 (lowering/ は fixtures/lowering/<sub>/*.json の 2 階層構成なので
     # glob */*.json だと skip 集計からも漏れる)
     while IFS= read -r fx; do
@@ -567,7 +575,7 @@ conformance: generate-self-definition
     # 回帰 gate (統括裁定 r27m18-1): pass 数が baseline を割ったら red。baseline は fail の
     # 解消に合わせて**手動**で上げる (自動追従は ratchet の逆回転 = 新規 fail を隠すので不可)。
     # 現 baseline は linked kuu.mbt fixture の query=parse 全 case が green の状態。
-    baseline=719
+    baseline=734
     if [[ "$fail" -gt 0 ]]; then
       printf >&2 "conformance FAILED: %d unexpected case(s) mismatched (not in frozen ledger)\n" "$fail"
       exit 1
