@@ -680,8 +680,8 @@ help-conformance: generate-self-definition
     printf "help-conformance: %d/%d cases pass (%d fail)\n" "$pass" "$total" "$fail"
     # 回帰 gate: pass 数が baseline を割ったら red。baseline は fail の解消に合わせて
     # **手動**で上げる (conformance recipe と同じ ratchet 方針)。現 baseline は
-    # fixtures/help/*.json 全 25 case が green の状態。
-    baseline=25
+    # fixtures/help/*.json 全 32 case が green の状態。
+    baseline=32
     if [[ "$pass" -lt "$baseline" ]]; then
       printf >&2 "help-conformance REGRESSION: pass=%d fell below baseline=%d\n" "$pass" "$baseline"
       exit 1
