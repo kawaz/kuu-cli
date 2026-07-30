@@ -38,14 +38,15 @@ just impl-mbt-test        # moon test cli/src/lib + CLI e2e against real spec fi
 just impl-mbt-lint        # moon check --target native
 ```
 
-The `e2e` recipe runs the compiled `kuu parse` binary against **five representative cases** picked from `kawaz/kuu/fixtures/`, reading each case's `args` and `expect` fields **directly from the fixture body via `jq`** (so a fixture rename or expected-value change is caught immediately, not masked by a hardcoded copy — cf. codex review #1 M-2). Current pin set:
+The `e2e` recipe runs the compiled `kuu parse` binary against **six representative cases** picked from `kawaz/kuu/fixtures/`, reading each case's `args` and `expect` fields **directly from the fixture body via `jq`** (so a fixture rename or expected-value change is caught immediately, not masked by a hardcoded copy — cf. codex review #1 M-2). Current pin set:
 
 | fixture | case id | axis |
 |---|---|---|
 | `multiple-parse/separator-typed.json` | `option-separator-number-success` | separator + type parse |
 | `export-key/rename.json` | `rename-projection` | `export_key`: result-key rename |
-| `export-key/collision.json` | `co-exposure-collision` | Ambiguous 昇格 (regression guard for C-1 = `front_door.parse` postprocessing) |
-| `inheritable-parse/basic.json` | `ancestor-inherit-flowdown` | resolve 相の inherit 流下 (regression guard for C-1) |
+| `export-key/collision.json` | `mapped-pair-shares-key` | definition-error の `(element, kind)` 全列挙 (DR-120) |
+| `path-search/variable-arity-ambiguous.json` | `color-arity-vs-name-receptacle` | 構造的 Ambiguous (regression guard for C-1 = `front_door.parse` postprocessing) |
+| `value-sources/default-fn-borrow-ladder.json` | `outer-default-borrowed` | resolve 相の祖先参照 `default_fn: "borrow:<source>"` (regression guard for C-1) |
 | `alias-parse/deprecated.json` | `deprecated-entry-warns` | structured `warnings` + `@depr` sentinel not leaking into `effects` (regression guard for M-1) |
 
 Reproducing the full CONFORMANCE-style comparison across every fixture is out of scope here (see v1 決定リスト item 8) — this layer only checks that the compiled binary agrees with each fixture's representative expected fields.
