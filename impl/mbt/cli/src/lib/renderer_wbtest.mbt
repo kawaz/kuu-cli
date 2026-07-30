@@ -6,7 +6,7 @@
 //
 // 【選定】: 3 case で「default 骨格 + グループ + 継承 + テンプレ」を代表:
 //   1. root-basic 相当 = 既定 skeleton + description + options + positional
-//   2. group + inherited (origin_style=separate_section 既定の分割) + hidden group 入口注記
+//   2. group 見出し + hidden group の入口注記
 //   3. テンプレ + binding 補間 (§2 + §3 + program_name 暗黙 binding)
 
 ///|
@@ -57,9 +57,9 @@ test "renderer golden: default skeleton with usage / description / options / pos
 }
 
 ///|
-/// GOLDEN 2: グループ (hidden group の入口注記) + inherited (origin_style=separate_section 既定)。
-/// help-render-group-hidden + origin-inheritable の合成 minimal definition。
-test "renderer golden: hidden group notice + separate_section inherited options" {
+/// GOLDEN 2: グループ見出しと hidden group の入口注記 (fixture help-render-group-hidden 相当の
+/// 最小 definition)。origin_style の分割は separate_section の golden が持つ。
+test "renderer golden: group headings and hidden group notice" {
   // group 宣言は「name/title のみの option エントリ」で表現する (DR-113 §8.1 のフラット並び)。
   // hidden group + public group + 各グループに 1 option を配し、default category_mode で hidden
   // group が入口注記に落ちることを pin する (fixture help-render-group-hidden 相当の最小形)。
@@ -116,11 +116,6 @@ test "renderer golden: template with placeholders and binding interpolation" {
 }
 
 ///|
-/// 追加 pin: origin_style separate_section 分割 (single scope で inheritable 由来を持つ簡易 def)。
-/// subcommand 経由の inheritable は spec fixture (origin-inheritable) が主戦場なので、ここでは
-/// 「inherited 側が local と別 heading 下に出る」の shape だけ pin する — inheritable 系 fixture
-/// は e2e 側 (help-conformance 33/33) で JSON model 面から担保されているので、text 面はスコープ
-/// を絞る。
 /// GOLDEN 5: repeat 表記 (RIMPL-Q5 暫定採用 2026-07-21 kawaz、根決定でない)。
 /// 4 case を 1 test に集約:
 ///   - 1..3 (min1 有限上限) = `<FILE{..3}>` (外側 <> が min1 を語るので内側 1 省略)
@@ -147,13 +142,17 @@ test "renderer golden: repeat notation (RIMPL-Q5 暫定表記)" {
 }
 
 ///|
-test "renderer golden: separate_section inherited options at parent scope" {
-  // subcommand socket が inheritable な --timeout を宣言 (fixture origin-inheritable 相当)。
-  // 親 scope (path=["prog"]) の help model は Inherited options: 見出しの下にその option を持つ
-  // (§5.3 separate_section 既定)。commands セクションに subcommand も並ぶ。
+/// 追加 pin: origin_style separate_section の分割 (§5.3 既定)。root が `global: true` の
+/// --verbose を宣言し、子 scope socket は自前の --timeout を宣言する。子 scope の model では
+/// --verbose が global origin (declared_at=["prog"], DR-113 §4.3) の宣言的コピーとして載るので、
+/// 「祖先由来 entry が local と別 heading 下に出る」shape がここで pin される。
+/// origin 付き model の JSON 面は e2e 側 (help-conformance) が担保しているので、text 面は
+/// この 1 case にスコープを絞る。
+test "renderer golden: separate_section inherited options at child scope" {
   let def =
-    #|{"name":"prog","commands":[{"type":"command","name":"socket","help":"manage sockets",
-    #|  "options":[{"name":"timeout","type":"number","long":true,"inheritable":true,"value_name":"SECONDS","help":"socket timeout"}]}]}
+    #|{"name":"prog","options":[{"name":"verbose","type":"flag","long":true,"global":true,"help":"verbose output"}],
+    #|  "commands":[{"type":"command","name":"socket","help":"manage sockets",
+    #|  "options":[{"name":"timeout","type":"number","long":true,"value_name":"SECONDS","help":"socket timeout"}]}]}
   let defj = @json.parse(def) catch {
     _ => abort("test: def text is not valid JSON")
   }
@@ -161,7 +160,7 @@ test "renderer golden: separate_section inherited options at parent scope" {
     Ok(a) => a
     Err(_) => abort("test: parse_definition failed")
   }
-  let model = match @kuu.dispatch_help_query(ast) {
+  let model = match @kuu.dispatch_help_query(ast, path=["socket"]) {
     @kuu.Model(m) => m
     _ => abort("test: dispatch_help_query did not return Model")
   }
@@ -169,13 +168,15 @@ test "renderer golden: separate_section inherited options at parent scope" {
   inspect(
     out,
     content=(
-      #|Usage: prog [OPTIONS] <COMMAND>
+      #|Usage: prog socket [OPTIONS]
       #|
-      #|Commands:
-      #|  socket   manage sockets
+      #|manage sockets
+      #|
+      #|Options:
+      #|  --timeout <SECONDS>   socket timeout
       #|
       #|Inherited options:
-      #|  --socket-timeout <SECONDS>   socket timeout
+      #|  --verbose   verbose output
       #|
     ),
   )

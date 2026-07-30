@@ -463,7 +463,7 @@ fn command_help_text(c : @kuu.HelpCommand, ctx : RenderCtx) -> String {
 /// inherited を独立見出しへ)。
 fn section_options(ctx : RenderCtx) -> String {
   // 1. entry を「表示可否」フィルタ (hidden group 所属を丸ごと除去、entry hidden は show_hidden で)。
-  // 2. origin_style="separate_section" のとき、local 系と inheritable/global 系に分割。
+  // 2. origin_style="separate_section" のとき、local 系と global 由来 (祖先宣言) に分割。
   // 3. group 見出し + 所属 option を出力 (model は宣言順、hidden group は入口注記 1 行)。
   let all_entries = filter_visible_options(ctx)
   if all_entries.length() == 0 {
@@ -590,11 +590,11 @@ fn split_by_origin(
 }
 
 ///|
+/// 当該 scope の宣言でない = 祖先由来の entry か (DR-113 §4.3 origin の `global` 形)。
 fn is_inherited_origin(o : @kuu.HelpOrigin) -> Bool {
   match o {
     @kuu.Local => false
     @kuu.Global(_) => true
-    @kuu.Inheritable(_) => true
   }
 }
 

@@ -9,7 +9,7 @@
 // front-door-parse-missing-postprocessing の kuu-cli 側追随):
 //
 // 玄関 API は `parse` (spec 準拠の ParsedOutcome 骨格 = parse_tree + apply_requires_filter +
-// promote_collision_ambiguous) と `resolve` (値源ラダー = env / config / inherit / default
+// promote_collision_ambiguous) と `resolve` (値源ラダー = cli/link > env > config > default の
 // seat fill を子 scope まで再帰的に充填) の 2 段。値源は `ValueSources` に束ね、parse と resolve
 // の両相へ同じ値を渡す。Success payload は ParsedBindings → ResolvedBindings と段階型で遷移する。
 //
@@ -295,7 +295,7 @@ fn outcome_to_json(
 ) -> (Json, Int) {
   match po {
     @kuu.Success(pbinds) => {
-      // resolve 相を通して値源ラダー (env / config / inherit / default) を充填 (DR-109 §7 =
+      // resolve 相を通して値源ラダー (cli/link > env > config > default) を充填 (DR-109 §7 =
       // 既定で resolve 適用、値源は §6 の実環境 / 試験用オプション経由で呼び出し側が確定済み)。
       let ro = @kuu.resolve(ast, pbinds, args, sources~)
       match ro {
@@ -577,7 +577,6 @@ fn source_str(s : @kuu.Source) -> String {
     @abi.Link => "link"
     @abi.Env => "env"
     @abi.Config => "config"
-    @abi.Inherit => "inherit"
     @abi.Tty => "tty"
     @abi.Const => "const"
     @abi.Default => "default"
@@ -920,11 +919,6 @@ fn help_origin_json(origin : @kuu.HelpOrigin) -> Json {
     @kuu.Global(declared_at) =>
       Json::object({
         "kind": Json::string("global"),
-        "declared_at": strs_to_json(declared_at),
-      })
-    @kuu.Inheritable(declared_at) =>
-      Json::object({
-        "kind": Json::string("inheritable"),
         "declared_at": strs_to_json(declared_at),
       })
   }
