@@ -1,6 +1,6 @@
 ---
 title: 重複キーを持つ result の JSON 直列化で片方が黙って落ちる
-status: open
+status: resolved
 category: bug
 created: 2026-07-25T17:23:32+09:00
 last_read:
@@ -9,10 +9,10 @@ wip_entered:
 blocked_entered:
 pending_entered:
 discarded_entered:
-resolved_entered:
+resolved_entered: 2026-08-01T10:59:53+09:00
 discard_reason:
 pending_reason:
-close_reason:
+close_reason: ["dr/DR-120", "implemented: 露出キー衝突は parse_definition 時の definition-error となり、重複キーを持つ in-memory result 自体が到達不能に (EXK2-Q1=a 裁定 2026-08-01)。issue が記録した self-resolve 分岐 (裁定 (a)/(c) 方向) が成立。rval_to_json の Map::from_array 後勝ちはエラー前状態を直列化する場面が無いため実害なし。"]
 blocked_by:
 origin: 自リポ TODO (dogfooding D4)
 ---
