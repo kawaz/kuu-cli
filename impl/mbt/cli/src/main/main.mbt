@@ -160,9 +160,9 @@ fn dispatch(result : @kuu.ResultValue) -> Unit {
 
 /// help を出す対象の command path を result から導出する。
 ///
-/// DESIGN §2.6 / DR-052: 結果キーを持つスコープ生成要素 (command 含む) は、選ばれたら子が
-/// 全部 absent でも空 kv `{}` を持つ。したがって「definition の commands に同名があり、値が
-/// object のキー」を再帰的に降りれば、選ばれた最深の command path が機械的に得られる。
+/// DR-130 §2: 未選択 command は `null`、選択済み command は全宣言キーを持つ object になる。
+/// したがって「definition の commands に同名があり、値が object のキー」を再帰的に降りれば、
+/// 選ばれた最深の command path が機械的に得られる。
 /// 失敗経路の `failure_path` (errors の path 由来) に対応する、成功経路側の scope 復元。
 fn selected_command_path(
   fields : Array[(String, @kuu.ResultValue)],
@@ -505,6 +505,7 @@ fn run_completion(command : Array[(String, @kuu.ResultValue)]) -> Unit {
 
 fn result_repr(value : @kuu.ResultValue) -> String {
   match value {
+    @abi.Scalar(@abi.Null) => "null"
     @abi.Scalar(@abi.String(text)) => "\"" + text + "\""
     @abi.Scalar(@abi.Bool(value)) => if value { "true" } else { "false" }
     @abi.Scalar(@abi.Number(value)) => value.to_string()
@@ -537,7 +538,10 @@ fn field_opt(
 ) -> @kuu.ResultValue? {
   for field in fields {
     if field.0 == name {
-      return Some(field.1)
+      match field.1 {
+        @abi.Scalar(@abi.Null) => return None
+        value => return Some(value)
+      }
     }
   }
   None

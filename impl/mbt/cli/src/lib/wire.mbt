@@ -455,6 +455,7 @@ fn rval_to_json(r : @kuu.ResultValue) -> Json {
 ///|
 fn value_to_json(v : @kuu.Value) -> Json {
   match v {
+    @abi.Null => Json::null()
     @abi.String(s) => Json::string(s)
     @abi.Bool(b) => Json::boolean(b)
     // DR-092 §1/§2: JSON に inf リテラルは無いため、float 値位置の無限大は
@@ -944,6 +945,7 @@ fn help_default_json(v : @kuu.HelpDefault) -> Json {
 /// ±∞ は spec 上 help_default に現れない (DR-113 §4)。
 fn help_value_json(v : @kuu.Value) -> Json {
   match v {
+    @abi.Null => Json::null()
     @abi.String(s) => Json::string(s)
     @abi.Bool(b) => Json::boolean(b)
     @abi.Number(d) => Json::number(d)

@@ -51,7 +51,7 @@ parse_case completion-generate '.result.completion.generate.definition == "def.j
 parse_case completion-query '.result.completion.query.definition == "def.json" and .result.completion.query.cword == 1 and .result.completion.query.words == ["kuu", "pa"]' \
   completion query def.json --cword 1 -- kuu pa
 parse_case version '.result.version == "0.0.0"' --version
-parse_case no-arguments '.result.show_help == false and (.result | keys) == ["show_help"]'
+parse_case no-arguments '.result == {complete:null, completion:null, help:null, parse:null, show_help:false, validate:null, version:null}'
 
 set +e
 help_out=$("$KUU_CLI" parse "$tmp_def" --no-env --no-config --tty '{}' -- parse --help)

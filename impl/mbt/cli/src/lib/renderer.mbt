@@ -868,6 +868,7 @@ fn render_default(d : @kuu.HelpDefault) -> String {
 ///|
 fn value_to_str(v : @kuu.Value) -> String {
   match v {
+    @abi.Null => "null"
     @abi.String(s) => s
     @abi.Bool(true) => "true"
     @abi.Bool(false) => "false"
