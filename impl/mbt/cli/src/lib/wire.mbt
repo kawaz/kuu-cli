@@ -59,7 +59,7 @@ pub fn cmd_parse(
   args : Array[String],
   env? : Map[String, String] = Map([]),
   config? : (String) -> @abi.ConfigVal? = fn(_p) { None },
-  tty? : Map[String, @kuu.TtyObs] = Map([]),
+  tty? : Map[String, Bool] = Map([]),
 ) -> CmdResult {
   let defj = @json.parse(def_text) catch {
     _ =>

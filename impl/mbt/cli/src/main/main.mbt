@@ -256,7 +256,7 @@ fn run_parse(command : Array[(String, @kuu.ResultValue)]) -> @lib.CmdResult {
     }
   }
 
-  let tty : Map[String, @kuu.TtyObs] = match string_field_opt(command, "tty") {
+  let tty : Map[String, Bool] = match string_field_opt(command, "tty") {
     Some(raw) => {
       let json = @json.parse(raw) catch {
         _ => die_with("kuu parse: --tty value is not valid JSON", 2)
@@ -268,9 +268,9 @@ fn run_parse(command : Array[(String, @kuu.ResultValue)]) -> @lib.CmdResult {
     }
     None =>
       Map([
-        ("stdin", @kuu.tty_obs(c_isatty(0) == 1, false)),
-        ("stdout", @kuu.tty_obs(c_isatty(1) == 1, false)),
-        ("stderr", @kuu.tty_obs(c_isatty(2) == 1, false)),
+        ("stdin", c_isatty(0) == 1),
+        ("stdout", c_isatty(1) == 1),
+        ("stderr", c_isatty(2) == 1),
       ])
   }
   let result = @lib.cmd_parse(def_text, parse_args, env~, config~, tty~)
@@ -696,26 +696,15 @@ fn config_value(raw : String, label : String) -> @kuu.ConfigVal {
   @kuu.config_from_json(json)
 }
 
-fn tty_from_json(j : Json) -> Result[Map[String, @kuu.TtyObs], String] {
+fn tty_from_json(j : Json) -> Result[Map[String, Bool], String] {
   match j {
     Object(object) => {
-      let result : Map[String, @kuu.TtyObs] = Map([])
+      let result : Map[String, Bool] = Map([])
       for name, value in object {
         match value {
-          Object(fields) => {
-            let terminal = match fields.get("terminal") {
-              Some(True) => true
-              Some(False) => false
-              _ => return Err("stream '" + name + "' needs boolean 'terminal'")
-            }
-            let cygwin = match fields.get("cygwin") {
-              Some(True) => true
-              Some(False) | None => false
-              _ => return Err("stream '" + name + "' has non-boolean 'cygwin'")
-            }
-            result.set(name, @kuu.tty_obs(terminal, cygwin))
-          }
-          _ => return Err("stream '" + name + "' value must be an object")
+          True => result.set(name, true)
+          False => result.set(name, false)
+          _ => return Err("stream '" + name + "' value must be a boolean")
         }
       }
       Ok(result)
