@@ -423,10 +423,30 @@ fn output_effects_to_json(effects : Array[@kuu.OutputEffect]) -> Json {
       }
       _ => ()
     }
+    // path: entity 内部の座を指す観測アドレス (DR-127)。entity と path で 1 つの構造化アドレスを
+    // なすので、`a.b` のような綴りへ畳まず別フィールドで出す。空 path (= entity 自身が着地点) は
+    // フィールドごと省く — 期待値側も書かないため (DR-109 §2 の厳密一致、errors.path と同じ規則)。
+    if e.path.length() > 0 {
+      fields.push(("path", obs_path_to_json(e.path)))
+    }
     fields.push(("source", Json::string(source_str(e.source))))
     // `scope` は fixture expect の effects 語彙に無い (CONFORMANCE §2 = {entity, op, operand?,
     // source, transform?, args?})。DR-109 §2 の厳密一致に従い出さない。
     arr.push(Json::object(Map::from_array(fields)))
+  }
+  Json::array(arr)
+}
+
+///|
+/// 観測 path の segment 列を JSON へ (DR-127)。名前セグメントは string、位置セグメントは number
+/// で、fixture 側の綴りと同型 (`["b"]` / `[2]`)。
+fn obs_path_to_json(path : Array[@abi.ObservationSegment]) -> Json {
+  let arr : Array[Json] = []
+  for seg in path {
+    match seg {
+      @abi.ObservationName(name) => arr.push(Json::string(name))
+      @abi.ObservationIndex(index) => arr.push(Json::number(index.to_double()))
+    }
   }
   Json::array(arr)
 }
