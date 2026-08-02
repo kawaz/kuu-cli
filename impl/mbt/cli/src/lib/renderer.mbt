@@ -873,6 +873,20 @@ fn value_to_str(v : @kuu.Value) -> String {
     @abi.Bool(true) => "true"
     @abi.Bool(false) => "false"
     @abi.Number(d) => d.to_string()
+    @abi.Array(items) => {
+      let parts : Array[String] = []
+      for item in items {
+        parts.push(value_to_str(item))
+      }
+      "[" + join_strings(parts, ", ") + "]"
+    }
+    @abi.Object(entries) => {
+      let parts : Array[String] = []
+      for entry in entries {
+        parts.push(entry.0 + ": " + value_to_str(entry.1))
+      }
+      "{" + join_strings(parts, ", ") + "}"
+    }
   }
 }
 

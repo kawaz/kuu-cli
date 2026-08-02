@@ -515,7 +515,7 @@ conformance: generate-self-definition
         #   - errors: 集合比較 (sort)。reason / path は fixture 側に書かれた要素でのみ比較
         #     (optional 検証) — got 側の当該 key を want に無い場合だけ落とす
         #   - interpretations / tried_triggers / warnings: 集合比較 (列挙順は非規範、sort)
-        #   - effects: 配列順込み完全一致 (順序が同一性成分) — 正規化しない
+        #   - effects: 配列順込み完全一致。object key 順と空 path の省略だけ正規化
         for key in $(jq -r --argjson i "$i" '.cases[$i].expect | keys[]' "$fx"); do
           case "$key" in
             errors)
@@ -533,6 +533,13 @@ conformance: generate-self-definition
               # 同じでもキー順が違えば整列結果が食い違う。e2e 側の canon_interps() と同じ形。
               want=$(jq -cS --argjson i "$i" ".cases[\$i].expect.\"$key\"" "$fx" | jq -cS 'sort_by(tojson)')
               got=$(jq -cS ".\"$key\"" <<<"$out" | jq -cS 'if type=="array" then sort_by(tojson) else . end')
+              ;;
+            effects)
+              # effects は配列順を保持し、object key 順だけを -S で正規化する。空 path は
+              # フィールド省略と等価 (CONFORMANCE §3) なので双方から落とす。operand は触らず、
+              # missing と explicit null の区別を保持する。
+              want=$(jq -cS --argjson i "$i" '.cases[$i].expect.effects | map(if .path == [] then del(.path) else . end) | walk(if type=="number" then .+0 else . end)' "$fx")
+              got=$(jq -cS '.effects | map(if .path == [] then del(.path) else . end) | walk(if type=="number" then .+0 else . end)' <<<"$out")
               ;;
             sources)
               # DR-122: result と同型の shadow tree。object key 順だけを -S で正規化し、
@@ -598,7 +605,7 @@ conformance: generate-self-definition
     # 回帰 gate (統括裁定 r27m18-1): pass 数が baseline を割ったら red。baseline は fail の
     # 解消に合わせて**手動**で上げる (自動追従は ratchet の逆回転 = 新規 fail を隠すので不可)。
     # 現 baseline は linked kuu.mbt fixture の query=parse 全 case が green の状態。
-    baseline=739
+    baseline=757
     if [[ "$fail" -gt 0 ]]; then
       printf >&2 "conformance FAILED: %d unexpected case(s) mismatched (not in frozen ledger)\n" "$fail"
       exit 1

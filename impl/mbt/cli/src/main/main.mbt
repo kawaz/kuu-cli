@@ -25,7 +25,7 @@ fn main {
   let self_json = @json.parse(SELF_DEFINITION_JSON) catch {
     _ => die_with("kuu: embedded definition is not valid JSON", 2)
   }
-  let self_ast = match @kuu.parse_definition(self_json) {
+  let self_ast = match @lib.parse_cli_definition(self_json) {
     Ok(ast) => ast
     Err(_) => die_with("kuu: embedded definition was rejected", 2)
   }
@@ -505,10 +505,7 @@ fn run_completion(command : Array[(String, @kuu.ResultValue)]) -> Unit {
 
 fn result_repr(value : @kuu.ResultValue) -> String {
   match value {
-    @abi.Scalar(@abi.Null) => "null"
-    @abi.Scalar(@abi.String(text)) => "\"" + text + "\""
-    @abi.Scalar(@abi.Bool(value)) => if value { "true" } else { "false" }
-    @abi.Scalar(@abi.Number(value)) => value.to_string()
+    @abi.Scalar(value) => value_repr(value)
     @abi.Array(values) => {
       let parts : Array[String] = []
       for item in values { parts.push(result_repr(item)) }
@@ -517,6 +514,25 @@ fn result_repr(value : @kuu.ResultValue) -> String {
     @abi.Object(fields) => {
       let parts : Array[String] = []
       for field in fields { parts.push(field.0 + ":" + result_repr(field.1)) }
+      "{" + parts.join(",") + "}"
+    }
+  }
+}
+
+fn value_repr(value : @kuu.Value) -> String {
+  match value {
+    @abi.Null => "null"
+    @abi.String(text) => "\"" + text + "\""
+    @abi.Bool(value) => if value { "true" } else { "false" }
+    @abi.Number(value) => value.to_string()
+    @abi.Array(values) => {
+      let parts : Array[String] = []
+      for item in values { parts.push(value_repr(item)) }
+      "[" + parts.join(",") + "]"
+    }
+    @abi.Object(fields) => {
+      let parts : Array[String] = []
+      for field in fields { parts.push(field.0 + ":" + value_repr(field.1)) }
       "{" + parts.join(",") + "}"
     }
   }

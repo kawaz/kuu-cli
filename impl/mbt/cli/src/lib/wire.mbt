@@ -48,6 +48,18 @@ pub(all) struct CmdResult {
 // ═════════════════════════════════════════════════════════════════════════════
 
 ///|
+/// Parse a definition with kuu-cli's assembly. The same binary is the conformance runner, so its
+/// registry includes DR-132's `fixture/*` residents in addition to the canonical product assembly.
+pub fn parse_cli_definition(
+  definition : Json,
+) -> Result[@kuu.AtomicAST, @kuu.DefLoadError] {
+  let registry = @node.Registry::new()
+  @kuu.install_canonical(registry)
+  @kuu.install_conformance_fixture_residents(registry)
+  @kuu.parse_definition(definition, extensions=registry)
+}
+
+///|
 /// `kuu parse <def_json_text> -- <args...>`: parse `args` against the definition and emit the
 /// outcome JSON (see file-level comment for the shape). exit 0 on success, 1 on failure /
 /// ambiguous / definition-error, 2 on malformed def JSON.
@@ -70,7 +82,7 @@ pub fn cmd_parse(
         exit: 2,
       }
   }
-  match @kuu.parse_definition(defj) {
+  match parse_cli_definition(defj) {
     Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
     Err(@kuu.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
@@ -104,7 +116,7 @@ pub fn cmd_complete(
         exit: 2,
       }
   }
-  match @kuu.parse_definition(defj) {
+  match parse_cli_definition(defj) {
     Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
     Err(@kuu.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
@@ -146,7 +158,7 @@ pub fn cmd_help(
         exit: 2,
       }
   }
-  match @kuu.parse_definition(defj) {
+  match parse_cli_definition(defj) {
     Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
     Err(@kuu.Rejected(errs)) =>
@@ -195,7 +207,7 @@ pub fn cmd_help_text(
         exit: 2,
       }
   }
-  match @kuu.parse_definition(defj) {
+  match parse_cli_definition(defj) {
     Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
     Err(@kuu.Rejected(errs)) =>
@@ -236,7 +248,7 @@ pub fn cmd_validate(def_text : String) -> CmdResult {
         exit: 2,
       }
   }
-  match @kuu.parse_definition(defj) {
+  match parse_cli_definition(defj) {
     Ok(_) => {
       // walk raw def JSON to collect all `"completer": "<name>"` string values; filter out
       // builtin residents (files / dirs). AST の内部 walk 経路は AtomicAST が pub(all) でない
@@ -484,6 +496,20 @@ fn value_to_json(v : @kuu.Value) -> Json {
     @abi.Number(d) if d.is_pos_inf() => Json::string("Infinity")
     @abi.Number(d) if d.is_neg_inf() => Json::string("-Infinity")
     @abi.Number(d) => Json::number(d)
+    @abi.Array(items) => {
+      let out : Array[Json] = []
+      for item in items {
+        out.push(value_to_json(item))
+      }
+      Json::array(out)
+    }
+    @abi.Object(entries) => {
+      let out : Array[(String, Json)] = []
+      for entry in entries {
+        out.push((entry.0, value_to_json(entry.1)))
+      }
+      Json::object(Map::from_array(out))
+    }
   }
 }
 
@@ -960,16 +986,10 @@ fn help_default_json(v : @kuu.HelpDefault) -> Json {
 }
 
 ///|
-/// help model 内の default 値専用の Value → JSON 変換 (parse 相の value_to_json と別関数)。
-/// help wire ではスカラー 3 型 (string/number/bool) のみを直接 JSON リテラルへ落とす。float の
-/// ±∞ は spec 上 help_default に現れない (DR-113 §4)。
+/// help model 内の default 値を JSON へ変換する。HelpDefault の現行入力は宣言値なので scalar
+/// だが、Value の閉域を保ったまま wire へ落とす責務は parse 相と同じため共通変換を使う。
 fn help_value_json(v : @kuu.Value) -> Json {
-  match v {
-    @abi.Null => Json::null()
-    @abi.String(s) => Json::string(s)
-    @abi.Bool(b) => Json::boolean(b)
-    @abi.Number(d) => Json::number(d)
-  }
+  value_to_json(v)
 }
 
 ///|
@@ -1082,7 +1102,7 @@ pub fn cmd_completion_generate(
       }
   }
   // parse_definition で受理性を担保 (definition-error は他 subcommand 同型の envelope で返す)。
-  match @kuu.parse_definition(defj) {
+  match parse_cli_definition(defj) {
     Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
     Err(@kuu.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }
@@ -1149,7 +1169,7 @@ pub fn cmd_completion_query(
         exit: 2,
       }
   }
-  match @kuu.parse_definition(defj) {
+  match parse_cli_definition(defj) {
     Err(@kuu.Malformed(reason)) =>
       { json: error_json("malformed_definition", reason), exit: 1 }
     Err(@kuu.Rejected(errs)) => { json: def_errors_json(errs), exit: 1 }

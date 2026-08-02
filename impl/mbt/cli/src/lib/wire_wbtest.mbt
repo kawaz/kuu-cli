@@ -54,6 +54,11 @@ fn jarr(j : Json) -> Array[Json] {
   }
 }
 
+///|
+fn is_jnull(j : Json) -> Bool {
+  j is Null
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // cmd_parse
 // ═════════════════════════════════════════════════════════════════════════════
@@ -77,6 +82,32 @@ test "cmd_parse success — scalar number option" {
   inspect(jstr(jkey(e0, "op")), content="set")
   inspect(jstr(jkey(e0, "source")), content="cli")
   inspect(jnum(jkey(e0, "operand")), content="8080")
+}
+
+///|
+/// `fixture/int_range` の部分形は、effect operand では欠落キーを保持し、result / sources では
+/// 宣言済み record 座を null 補形する。DR-132 §4 の 3 観測面を CLI wire で同時に固定する。
+test "cmd_parse DR-132 fixture resident: raw composite operand and null-filled result" {
+  // `fixture/int_range` is installed only for the conformance execution context. Its partial form
+  // keeps the missing `end` key absent in the raw effect operand, while result/sources projection
+  // fills that declared record seat with null (DR-132 §4).
+  let def =
+    #|{"options": [{"name": "r", "type": "fixture/int_range", "long": true}]}
+  let r = cmd_parse(def, ["--r", "5.."])
+  inspect(r.exit, content="0")
+  let j = @json.parse(r.json)
+  let operand = jkey(jarr(jkey(j, "effects"))[0], "operand")
+  inspect(jnum(jkey(operand, "start")), content="5")
+  guard operand is Object(operand_fields) else {
+    abort("effect operand is not an object")
+  }
+  inspect(operand_fields.get("end") is None, content="true")
+  let result_r = jkey(jkey(j, "result"), "r")
+  inspect(jnum(jkey(result_r, "start")), content="5")
+  inspect(is_jnull(jkey(result_r, "end")), content="true")
+  let sources_r = jkey(jkey(j, "sources"), "r")
+  inspect(jstr(jkey(sources_r, "start")), content="cli")
+  inspect(is_jnull(jkey(sources_r, "end")), content="true")
 }
 
 ///|

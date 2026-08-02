@@ -15,7 +15,7 @@ fn build_model_for_test(def_text : String) -> @kuu.HelpModel {
   let defj = @json.parse(def_text) catch {
     _ => abort("test: def text is not valid JSON")
   }
-  let ast = match @kuu.parse_definition(defj) {
+  let ast = match parse_cli_definition(defj) {
     Ok(a) => a
     Err(_) => abort("test: parse_definition failed")
   }
@@ -156,7 +156,7 @@ test "renderer golden: separate_section inherited options at child scope" {
   let defj = @json.parse(def) catch {
     _ => abort("test: def text is not valid JSON")
   }
-  let ast = match @kuu.parse_definition(defj) {
+  let ast = match parse_cli_definition(defj) {
     Ok(a) => a
     Err(_) => abort("test: parse_definition failed")
   }
