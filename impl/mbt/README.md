@@ -9,7 +9,7 @@ impl/mbt/
   moon.work            workspace: cli + deps/kuu.mbt
   cli/
     kuu-cli.def.json   kuu-cli's own kuu definition (source of its argv parsing and help)
-    moon.mod           name="kawaz/kuu-cli-mbt", imports kawaz/kuu@0.1.0
+    moon.mod           name="kawaz/kuu-cli-mbt", imports kawaz/kuu@0.0.18
     src/
       lib/wire.mbt         JSON emitters (parse / complete / validate / help / completion)
       lib/renderer.mbt     help text renderer

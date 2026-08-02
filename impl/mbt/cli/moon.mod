@@ -11,6 +11,6 @@ preferred_target = "native"
 description = "MoonBit PoC of kuu-cli (kawaz/kuu-cli, DR-0001 §3)"
 
 import {
-  "kawaz/kuu@0.1.0",
+  "kawaz/kuu@0.0.18",
   "moonbitlang/x@0.4.46",
 }
